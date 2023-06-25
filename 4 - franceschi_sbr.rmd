@@ -1,0 +1,241 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+# SAD
+
+```{r}
+pacman::p_load(epiR, irr, correlation, lme4, purrr, broom, car, emmeans, multcomp, tidyverse)
+
+# sad_wide_raw <- rio::import(here::here("data", "data-sad.csv"))
+sad_wide_raw <- read_csv("https://raw.githubusercontent.com/juanchiem/agro_data/master/data-sad.csv") 
+
+sad_wide_raw %>% 
+  janitor::tabyl(method, leaf)
+
+sad_wide_raw %>% str
+
+sad_wide_raw %>% 
+  separate(method, c("author","method"),  "_") %>%   
+  mutate_if(is.character, as.factor) %>% 
+  mutate_at(vars(author, method), fct_rev) -> sad_wide
+
+sad_wide %>% str
+```
+
+We need to reshape this data frame to the tidy format, where all responses are in a single column which facilitates further work within the `tidyverse`. For this, we use the `pivot_longer` function and create the `rater` and the `estimate` variables to accomodate data from the multiple columns. We should indicate the columns to gather, which are 4 to 23 and this way the first three columns are kept as we want: method, leaf and actual severity.
+
+```{r}
+sad_wide %>%
+  pivot_longer(cols= 5:24, 
+               names_to = "rater", 
+               values_to = "estimate") %>%
+  mutate_at(vars(rater), as.numeric) -> sad
+
+sad
+```
+
+```{r}
+sad %>%
+  ggplot(aes(x= method, y = estimate - actual)) +
+  facet_wrap("author")+
+  geom_boxplot() +
+  geom_jitter(width=.1, alpha=.2) 
+```
+
+First the absolute value
+
+```{r}
+sad %>%
+  ggplot(aes(x=leaf, y=actual, color = method)) +
+  facet_wrap("author")+
+  geom_line(aes(leaf, actual, color = "actual"),size = 1.5) +
+  geom_point(aes(leaf, estimate), size = 1.5, alpha = 0.2) +
+  geom_smooth(aes(leaf, estimate), se = F) +
+  labs(y = "Severity (%)", x = "Leaf ordered by increasing severity (0.25 to 84%)")
+```
+
+Error of the estimates
+
+```{r}
+sad %>%
+  ggplot(aes(x= leaf, y=estimate - actual, color = method)) +
+  facet_wrap("author")+
+  geom_hline(yintercept = 0) +
+  geom_point(aes(leaf, estimate - actual), size = 1.5, alpha = 0.2) +
+  geom_smooth(aes(leaf, estimate - actual), se = F) +
+  labs(y = "Severity", x = "Leaf ordered by increasing severity (0.25 to 84%)")
+```
+
+Per rater
+
+```{r}
+sad %>%
+  filter(rater<11) %>% 
+  ggplot(aes(leaf, actual, col = method)) +
+  geom_point(aes(leaf, estimate), size = 1, alpha = 0.2) +
+  geom_smooth(aes(leaf, estimate), se = F) +
+  facet_grid(author~rater) +
+  labs(y = "Value", x = "Leaf")
+```
+
+And now for the error of the estimates. 
+
+```{r}
+sad %>%
+  filter(rater<11) %>% 
+  ggplot(aes(leaf, estimate - actual, color = method)) +
+  geom_hline(yintercept = 0) +
+  geom_point(aes(leaf, estimate - actual), size = 0.5, alpha = 0.1) +
+  geom_smooth(aes(leaf, estimate - actual), se = F) +
+  facet_grid(author~ rater) +
+  labs(y = "Value", x = "Leaf")
+```
+
+In the plots above we showed the error of the estimates by leaf, and although we know that severity was incremental, we had no information on this values. Hence, we can make another plot with severity on the x axis and identify ranges of actual severity with higher errors and compare the two SADs.
+
+## Lin's concordance 
+
+```{r}
+pacman::p_load(purrr, broom, epiR, irr, lme4, car, emmeans, multcomp)
+```
+
+```{r}
+?epi.ccc() 
+```
+
+Veamos como opera la función `epi.ccc`. Para ello tomemos el primer evaluador de todo el dataset:
+
+```{r}
+sad %>% 
+  # filter(rater==1) %>% 
+  nest(data = c(leaf, actual, estimate)) %>% 
+  slice(1) %>% 
+  unnest(data) -> rater_1
+```
+
+Ahora si, apliquemos la funcion para `rater_1` 
+
+```{r}
+epi.ccc(rater_1$actual, rater_1$estimate,  ci = "z-transform", conf.level = 0.95)
+```
+
+Calculando las metricas de manera serial para todos los evaluadores 
+
+```{r}
+ccc_func <- function(.) {
+  epi.ccc(.$actual, .$estimate,  ci = "z-transform", conf.level = 0.95)
+}
+```
+
+
+```{r}
+sad %>% 
+  nest(data = c(leaf, actual, estimate)) -> nested_sad
+```
+
+```{r}
+nested_sad
+```
+
+```{r}
+nested_sad %>% 
+  mutate(fit = map(data, ccc_func)) -> metrics
+metrics
+```
+
+
+
+```{r}
+metrics %>% 
+  unnest(fit) %>% 
+  rowwise %>% 
+  mutate(fit = toString(unlist(fit))) %>%
+  group_by(author, method, rater) %>% 
+  summarize(string = paste(fit, collapse = "_")) %>% 
+  separate(col = string, 
+           into = c("LCC", "s_shift", "l_shift", "C_b"), 
+           sep = "_") %>% 
+  separate(col = LCC, 
+           into = c("LCC", "ccc.lower", "ccc.upper"), 
+           sep = ",") %>% 
+  mutate_at(vars(author, method, rater), as.factor) %>% 
+  mutate_if(is.character, as.double) %>% 
+  ungroup -> metric_results#
+
+metric_results
+```
+
+```{r}
+metric_results %>% 
+  knitr::kable()
+```
+
+```{r}
+metric_results %>% 
+  group_by(author, method) %>% 
+  summarise_if(is.numeric, mean, na.rm = TRUE) %>% 
+  # select(l_shift, s_shift, C_b, ) %>% 
+  arrange(desc(LCC))
+```
+8
+```{r}
+metric_old <- metric_results %>% 
+  filter(author == "old")
+
+metric_new <- metric_results %>% 
+  filter(author == "new")
+
+```
+
+```{r}
+pc_old <- lmer(LCC ~ method + (1 | rater), 
+               data = metric_old, REML = FALSE)
+means_pc_old <- emmeans(pc_old, ~ method)
+res_pc_old <- cld(means_pc_old, Letters=letters)
+res_pc_old
+```
+
+```{r}
+pc_new <- lmer(LCC ~ method + (1 | rater), data = metric_new, REML = FALSE)
+means_pc_new <- emmeans(pc_new, ~ method)
+res_pc_new <- cld(means_pc_new, Letters=letters)
+res_pc_new
+```
+
+## Interrater reliability
+
+Two methods were used here. The overall concordance coefficient and the intra-class correlation coefficient.
+
+* No aid old
+
+```{r}
+library(irr)
+```
+
+```{r}
+sad %>% 
+  filter(author=="old") %>% 
+  filter(method=="noaid") -> sad_noaid_old 
+```
+
+
+```{r}
+sad_noaid_old %>% 
+  pivot_wider(names_from = rater, 
+              values_from = estimate) %>% 
+  dplyr::select(5:23)  -> sad_noaid_old2
+```
+
+Solo Unaided Old
+```{r}
+sad_occc_noaid_old <- epi.occc(sad_noaid_old2, 
+                               na.rm = FALSE, pairs = TRUE)
+
+sad_icc_noaid_old <- icc(sad_noaid_old2, model = "twoway", unit = "single", type = "consistency")
+
+sad_occc_noaid_old$occc
+sad_icc_noaid_old$value
+```
+

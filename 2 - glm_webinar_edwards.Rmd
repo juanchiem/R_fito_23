@@ -1,0 +1,754 @@
+---
+title: "GLM webinar"
+---
+
+# Session setup 
+
+Cargamos paquetes de utilidad para esta sesión y configuramos la estetica global de los graficos. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(rio, tidyverse,  # manipulacion general de datos
+               lme4,       # ajuste de modelos mixtos
+               DHARMa,     # diagnosticos de GLM
+               performance,# diagnosticos de LM 
+               sjPlot,     # visualizacion de outputs
+               emmeans,    # medias predichas por los modelos y comparaciones
+               ggeffects,  # predicciones
+               multcomp, multcompView)   # letras de test de comparaciones multiples
+
+theme_set(theme_bw())
+
+# agregamos una funcion de ploteado rapido 
+
+# gghist <- function(x, e, m){
+#   ggplot() +
+#     aes(x)+
+#     geom_histogram(binwidth=1, colour="gray30", fill="gray70") +
+#     geom_vline(xintercept = e, col="blue")+
+#     geom_vline(xintercept = m, col="red", linetype="dashed")
+# }
+```
+
+#1 ----------------------------
+# Demos
+
+## Dist. Normal
+
+```{r}
+set.seed(1)
+x <- rnorm(n=100,    # sample size
+          mean=10,  # mean of sample
+          sd=3      # standard deviation of sample
+         )
+head(x)
+mean(x)
+sd(x)
+
+# predictor linear
+mu = 3 + 2*x      
+plot(x, mu)
+
+# generamos el componente aleatorio con distribucion normal de los errores
+# set.seed(1)
+y  <- mu + rnorm(100, 0, 3)
+
+plot(x,y)
+```
+
+## LM - repaso
+
+```{r}
+mod1 <- lm(y~x)
+plot_model(mod1, type='pred', show.data=T, ci.lvl = NA)
+summary(mod1)
+```
+
+De este modelo entendemos que cuando x=0, y=2.89 y por cada aumento unitario de x, y aumenta 1.99 unidades
+
+y = 2.89 + 1.99 * x
+
+Ahora veamos el mismo ajuste usando "glm" 
+
+```{r}
+mod1.1 <- glm(y~x, family = gaussian)
+plot_model(mod1.1, type='pred', show.data=T, ci.lvl = NA)
+summary(mod1.1)
+```
+
+y = 2.89 + 1.99 * x
+
+Exactamente los mismos coeficientes que mod1
+
+```{r}
+gaussian()
+binomial()
+poisson()
+```
+
+## Dist. Binomial
+
+Entendamos la naturaleza binaria de la incidencia. 
+
+Imaginemos que estamos entrando en un campo de soja y queremos estimar la incidencia de una enfermedad foliar X
+
+Una estacion (unidad) de muestreo de tamaño 30
+
+```{r}
+set.seed(1)
+
+bin_1 <- rbinom(
+  1,        # numero de observaciones o simulaciones (estaciones de muestreo)
+  size=30,  # numero de ensayos (n) 
+  p=0.1     # probabilidad de exito (p)
+)
+bin_1
+bin_1/30    # 1 valor de incidencia de estacion de muestreo
+
+# 0.066 -> 6,6% incidencia media del lote
+
+# gghist(bin_1, e=30*0.1, m = mean(bin_1))
+```
+
+10 estaciones de muestreo de tamaño 30
+
+```{r}
+set.seed(1)
+
+bin_2 <- rbinom(
+  10,       # numero de observaciones
+  size=30,  # numero de ensayos (n) 
+  p=0.1     # probabilidad de exito (p)
+)
+bin_2       # muestra compuesta de 10 estaciones de muestreo con n=30 
+bin_2/30    # 10 valores de incidencia de n=30
+
+# gghist(bin_2, e=30*0.1, m=mean(bin_2)) 
+
+mean(bin_2/30) 
+# 0.11 -> 11% incidencia media del lote
+```
+
+100 estaciones de muestreo de tamaño 30
+
+```{r}
+set.seed(1)
+bin_3 <- rbinom(
+  100,    # numero de observaciones
+  size=30,  # numero de ensayos 
+  p=0.1     # probabilidad de exito
+)
+bin_3
+
+# gghist(bin_3, e=30*0.1, m=mean(bin_3)) 
+bin_3/30 # 100 valores de incidencia de n=30
+mean(bin_3/30) 
+# 0.101 -> 10.1% incidencia media del lote
+```
+
+```{r}
+# media = np 
+media = 30*0.1
+media
+
+# varianza  = np(1−p) 
+varianza =  30*0.1*(1-0.1)
+varianza
+
+# sd = sqrt(np(1−p)) 
+sd =  sqrt(30*0.1*(1-0.1))
+sd
+# sd_field =  1.643168
+```
+
+Variable aleatoria $X$ que es distribuida $X∼binomial(n,p)$ con media $μ = np$ y  varianza $σ2=np(1−p)$, siendo $X$ el conteo de eventos exitosos en $n$ ensayos Bernoulli idénticos e independientes con probabilidad de éxito $p$ constante.
+
+# 2 ----------------------------
+# DBCA
+
+```{r}
+phom_raw <- import("https://raw.githubusercontent.com/juanchiem/glm_webinar/main/data/phomopsis.csv") %>% tibble
+# phom_raw <- rio::import("data/phomopsis.csv") %>% tibble 
+```
+
+**Efecto de tratamientos de fungicidas sobre tizon foliar por Phomopsis en frutilla (Nita, Madden & Ellis)**
+
+- Patógeno: *Phomopsis obscurans*
+
+- Diseño en bloques completos aleatorizados (RCBD)
+
+- Cuatro bloques (bk, j = 1, ..., 4) 
+
+- Ocho tratamientos: control no tratado + 7 fungicidas (trt, i = 1, ..., 8) aleatorizados dentro de cada bloque 
+- Variable respuesta (Y): Numero de foliolos enfermos 
+
+- n Tamaño de la muestra
+
+- Incidencia por parcela = y/n
+
+
+> Madden, L. V., W. W. Turechek, and M. Nita. "Evaluation of generalized linear mixed models for analyzing disease incidence data obtained in designed experiments." *Plant Disease* 86.3 (2002): 316-325.
+
+#· Acondicionamiento
+
+```{r}
+phom_raw  
+
+# Factorizamos nuestros variebles independientes (predictoras) y calculamos la incidencia en proporcion 
+
+phom_dat <- phom_raw %>% 
+  mutate_at(vars(trt, bk), as.factor) %>% 
+  mutate(inc=y/n) %>% 
+  arrange(trt)
+phom_dat
+```
+
+#· Visualización
+
+```{r}
+phom_dat %>% 
+  ggplot() + 
+  aes(x=trt, y = inc) + 
+  geom_boxplot(alpha=.5, width = .2) + 
+  geom_point(alpha=.7) + 
+  labs(x="Tratamientos", y="Incidencia (proporción)")
+```
+
+# · Modelos mixtos
+
+Efecto fijo al tratamiento y aleatorio a los bloques
+
+#·· LM
+
+```{r}
+# pacman::p_load(lmerTest)
+mod_phom_LM <- lmer(inc ~ trt + (1|bk), 
+                    data=phom_dat)
+performance::check_homogeneity(mod_phom_LM)
+performance::check_normality(mod_phom_LM)
+```
+
+```{r}
+car::Anova(mod_phom_LM, type="III")
+summary(mod_phom_LM)
+```
+
+Podriamos avanzar con el modelo, hacia la estimacion de medias predichas por el mismo 
+
+{emmeans, multcomp}
+
+```{r}
+em_phom_LM <- emmeans(mod_phom_LM, ~ trt, type="response")
+em_phom_LM
+# comparaciones multiples 
+res_phom_LM <- cld(em_phom_LM, Letters = letters, alpha = .05, type = "response")
+
+knitr::kable(res_phom_LM)
+
+plot_model(mod_phom_LM, type='pred', show.data=T)
+```
+
+Interpretacion de coeficientes: 
+
+Ahora que tenemos los predichos de cada tratamiento podemos interpretar los coeficientes. 
+
+Recordemos que trt 1 es el nivel de referencia (orden arbitrario alfabético, se puede cambiar), y el resto de trat se suman a este para la estimacion de su media:
+
+```{r}
+knitr::kable(res_phom_LM)
+summary(mod_phom_LM)
+c_t1 = 0.4366667
+c_t2 = 0.4366667 +(-0.15667)
+c_t2
+c_t3 = 0.4366667 +(-0.29000)
+c_t3
+```
+
+#·· GLM
+
+(Anecdotico)
+
+```{r}
+mod_phom_LM2 <- glmer(inc ~ trt + (1|bk),
+                      family = gaussian("identity"),
+                      data=phom_dat)
+summary(mod_phom_LM2)
+summary(mod_phom_LM)
+```
+
+Opción 1: variable original (éxitos y fracasos) agrupados 
+
+```{r}
+mod_phom_GLM1 <- glmer(
+  cbind(y, n-y) ~ trt + (1|bk), # matriz de exitos y fracasos
+  family="binomial",
+  data=phom_dat)
+summary(mod_phom_GLM1)
+```
+
+Opción 2: proporcion de exitos / total muestra (incidencia) 
+
+```{r}
+mod_phom_GLM2 <- glmer(inc ~ trt + (1|bk), 
+               family="binomial", 
+               weights = n, # pesos o tamaño de muestra
+               data=phom_dat)
+summary(mod_phom_GLM2)
+```
+
+
+```{r}
+tab_model(mod_phom_GLM1, mod_phom_GLM2)
+```
+
+#··· Diagnósticos
+
+https://stats.stackexchange.com/questions/185491/diagnostics-for-generalized-linear-mixed-models-specifically-residuals 
+
+{DHARMa}
+
+https://cran.r-project.org/web/packages/DHARMa/vignettes/DHARMa.html#goodness-of-fit-tests-on-the-scaled-residuals
+
+```{r}
+testOutliers(mod_phom_GLM2)
+testDispersion(mod_phom_GLM2)
+```
+
+Medias predichas por el modelo ajustado y comparaciones multiples
+
+```{r}
+em_phom_GLM <- emmeans(mod_phom_GLM2, ~ trt, type="response")
+res_phom_GLM <- cld(em_phom_GLM, Letters = letters, alpha = .05, type = "response")
+knitr::kable(res_phom_GLM)
+```
+
+#··· Interpretacion de coeficientes 
+
+trt 1 es el nivel de referencia, y el resto de trat se suman a este para la estimacion de su media:
+
+Pero ahora en escala de log ODDS
+
+```{r}
+summary(mod_phom_GLM2)
+knitr::kable(res_phom_GLM)
+
+LO_t1 = -0.2585
+p_t1 = 0.4357251
+
+odds_t1 = 0.4357251 / (1-0.4357251)
+odds_t1 
+
+log(odds_t1)
+LO_t1
+# volver a slide 15
+```
+
+Resto de tratamientos
+
+```{r}
+p_t2 = 0.2763751
+odds_t2 = 0.2763751 / (1-0.2763751)
+
+OR_t2_t1 = odds_t2/odds_t1
+
+OR_t2_t1 #  0.4946108
+
+log(OR_t2_t1) # chequear con summary
+summary(mod_phom_GLM2)
+log(OR_t2_t1) # chequear con summary
+
+# similar al LM?
+log(odds_t2) - log(odds_t1)
+
+```
+
+
+```{r}
+# t2 directamente del summary
+exp(-0.7040)
+OR_t2_t1
+tab_model(mod_phom_GLM2)
+(1-0.4946029) * 100
+# 50.53971
+```
+
+> La chance de un foliolo de frutilla presentar sintoma de phomopsis disminuye un 50% cuando se aplica el tratamiento 2 respecto al control sin tratar
+
+```{r}
+knitr::kable(res_phom_LM)
+knitr::kable(res_phom_GLM)
+```
+
+
+• Los errores estándar estimados (SE) son todos incorrectos (por definición), deben ser funciones de la media para datos binomiales 
+
+
+• Los SE incorrectos darán pruebas incorrectas de significación para los efectos del tratamiento y conducirán a conclusiones incorrectas
+
+#3 ----------------------------
+
+# Reg. Logistica
+
+## Data maracuya
+
+dat 
+
+geno: genotipos de maracuyá (Passiflora edulis) (A y B)
+
+bk: bloque (area homogenea dentro del campo que incluye hileras de genotipo A y B) - Efecto aleatorio
+
+days: dias desde la inoculacion (DDI) con el virus CABMV (Cowpea aphid-borne mosaic virus) 
+
+n_plants: nro de plantas evaluadas dentro de cada parcela 
+
+dis_plants: plantas con sintomas del CABMV
+
+y = inc_prop (dis_plants/n_plants)
+
+plot: unidad experimental (parcelas=bloque:geno)
+
+
+```{r}
+raw <- rio::import("https://raw.githubusercontent.com/juanchiem/glm_webinar/main/data/maracuya.csv") %>% tibble
+# raw <- rio::import("data/maracuya.csv") %>% tibble
+
+dat <- raw %>%  
+  mutate_at(vars(geno, bk), as.factor) %>% 
+  mutate(inc_prop=dis_plants/n_plants, 
+         plot = interaction(bk,geno))  # %>% 
+
+dat %>%
+    ggplot() +
+    aes(x=days, y=inc_prop, col=geno, shape=bk)+
+    geom_point()+
+    geom_line(aes(group=interaction(bk,geno))) 
+```
+
+Filtramos el dataset completo para subsets menores
+
+```{r}
+# solo una evaluación a los 60 dias 
+dat60 <- dat %>% 
+  filter(days %in% c(60))
+
+# solo una evaluación a los 90 dias 
+dat90 <- dat %>% 
+  filter(days %in% c(90))
+
+# Dos evaluaciones: a los 60 y 90 dias 
+dat60_90 <- dat %>% 
+  filter(days %in% c(60, 90)) # %>% 
+  # mutate_at(vars(days), as.factor) 
+```
+
+
+# Single-point assessment 
+
+# · 60 d
+
+```{r}
+dat60
+dat60 %>% 
+  ggplot() + 
+  aes(x=geno, y=inc_prop) + 
+  geom_jitter(alpha=.5, width=.02)
+```
+
+
+```{r}
+# mod1 <- glmer(
+#   cbind(dis_plants, n_plants-dis_plants) ~ geno + (1|bk), 
+#   family="binomial", 
+#   data=dat60) 
+
+mod1 <- glmer(
+  inc_prop ~ geno + (1|bk), # bloque como efecto aleatorio
+  weights=n_plants,         
+  family="binomial", 
+  data=dat60) 
+
+car::Anova(mod1)
+summary(mod1)
+```
+
+
+```{r}
+tab_model(mod1)
+plot_model(mod1, type='pred', show.data=T,   bpe.color ="red")
+```
+
+Otro gran aliado es el paquete "emmeans" quien nos devuelve las estimaciones en proporcion ahorrandonos muchos calculos manuales 
+
+```{r}
+em1 <- emmeans(mod1, ~ geno, type="response")
+res1 <- cld(em1, Letters = letters, alpha = .05, type = "response")
+knitr::kable(res1)
+```
+
+Interpretacion de coef y medidas de efecto
+
+```{r}
+# lo que nos da el emmeans
+p_A = 0.1066667
+p_B =  0.0933333
+
+odds_A = p_A/(1-p_A)
+odds_B = p_B/(1-p_B)
+
+# lo que nos da el tab_model
+OR_B_A = odds_B/odds_A
+OR_B_A
+
+# lo que nos da el summary 
+log_OR_B_A = log(OR_B_A)
+log_OR_B_A  
+summary(mod1)
+```
+
+
+# · 90 d
+
+```{r}
+dat90
+
+dat90 %>% 
+  ggplot() + 
+  aes(x=geno, y=inc_prop) + 
+  geom_point()
+
+# mod1 <- glmer(
+#   cbind(dis_plants, n_plants-dis_plants) ~ geno + (1|bk), 
+#   family="binomial", 
+#   data=dat60)
+```
+
+
+```{r}
+mod2 <- glmer(
+  inc_prop ~ geno + (1|bk),
+  weights=n_plants,
+  family="binomial", 
+  data=dat90)
+
+# boundary (singular) fit: see help('isSingular') puede deberse al bajo numero de bk
+```
+
+
+```{r}
+car::Anova(mod2)
+summary(mod2)
+```
+
+Vemos que ahora si, el geno tiene efecto significativo sobre la incidencia de la enfermedad
+
+```{r}
+tab_model(mod2)
+```
+
+podemos decir que la chance de presentar la enfermedad del genotipo B es 71% (1 - 0.29 = 0.71 * 100) menor en relacion al geno A
+
+```{r}
+plot_model(mod2, type='pred', show.data=T)
+```
+
+
+```{r}
+em2 <- emmeans(mod2, ~ geno, type="response")
+res2 <- cld(em2, Letters = letters, alpha = .05, type = "response")
+knitr::kable(res2)
+```
+
+
+# Multiple-point assessment 
+
+Incluyendo una interaccion 
+
+# · 60 y 90 d 
+
+```{r}
+dat60_90
+
+dat60_90 %>% 
+  ggplot() +
+  aes(x=days, y=inc_prop, col=geno, shape=bk)+
+  geom_point()
+```
+
+
+```{r}
+# debido a las mediciones repetidas en el tiempo agregamos efecto aleatorio sobre la parcela
+
+mod3 <- glmer(inc_prop ~ geno * days + 
+                (1|bk) + (1|bk:geno), 
+              weights=n_plants,
+              family="binomial",
+              data=dat60_90) 
+
+car::Anova(mod3)
+```
+
+(anecdotico: days como factor con  2 niveles)
+
+```{r}
+car::Anova(glmer(inc_prop ~ geno * factor(days) + 
+                (1|bk) + (1|bk:geno), 
+              weights=n_plants,
+              family="binomial",
+              data=dat60_90))
+```
+
+Removiendo la interaccion, dejando como efectos simples geno y dias
+
+```{r}
+mod3.1 <- glmer(inc_prop ~ geno + days + 
+                  (1|bk) + (1|bk:geno),
+              weights=n_plants,
+              family="binomial",
+              data=dat60_90)
+```
+
+
+```{r}
+anova(mod3, mod3.1, test = "Chisq")
+AIC(mod3, mod3.1)
+```
+
+El modelo conteniendo la interaccion (geno * days) es mejor (p=0.0231, AIC=58.34804) 
+
+(anecdótico: asignacion de parcela explicitamente)
+```{r}
+mod3_ <- glmer(inc_prop ~ geno * days + 
+                (1|bk) + (1|plot), 
+              weights=n_plants,
+              family="binomial",
+              data=dat60_90) 
+AIC(mod3, mod3_)
+```
+
+```{r}
+summary(mod3)
+```
+
+log odds A = -5.33987 + 0.05358 days
+log odds B = (-5.33987 + 2.04105) + (0.0535-0.036) days
+
+```{r}
+tab_model(mod3)
+```
+
+days = 1.06 >> por cada dia acumulado desde la inoculacion el geno A tiene una chance de aumentar 1.06 veces la probabilidad de aparicion de sintomas (aumento de la incidencia) y es significativo (IC: 1.03–1.08, p=	<0.001)
+
+geno [B] * days	= 0.96 >>> la chance de aumentar la incidencia por cada dia desde la inoculacion en el geno B es 4% menor respecto al geno A (IC: 0.93 – 0.99, p=0.023) 
+
+
+```{r}
+plot_model(mod3, 
+           terms = c("days", "geno"), 
+           type='pred', show.data=T)
+
+em3 <- emmeans(mod3, ~ geno|days, type="response")
+
+res3 <- cld(em3, Letters = letters, alpha = .05, type = "response")
+knitr::kable(res3)
+```
+
+confirmamos lo visto anteriormente: 
+- a los 60 dias no hubo diferencias en la incidencia del virus, pero si a los 90 ddi
+
+#· Serie full
+
+```{r}
+head(dat)
+dat %>% 
+  ggplot() +
+  aes(x=days, y=inc_prop, col=geno, shape=bk)+
+  geom_point()
+
+# debido a las mediciones repetidas en el tiempo agregamos efecto aleatorio sobre la parcela
+
+mod_serie <- glmer(inc_prop ~ geno * days + 
+                     (1|bk) + (1|bk:geno),  
+                   weights=n_plants,
+                   family="binomial",
+                   data=dat) 
+```
+
+```{r}
+# Sacamos el efecto del genotipo
+mod_serie0 <- glmer(inc_prop ~ days +  
+    (1|bk) + (1|bk:geno),
+              weights=n_plants,
+              family="binomial",
+              data=dat) 
+
+mod_serie1 <- glmer(inc_prop ~ days + geno +   
+    (1|bk) + (1|bk:geno),
+              weights=n_plants,
+              family="binomial",
+              data=dat) 
+```
+
+## Seleccion de modelo
+
+```{r}
+anova(mod_serie0, mod_serie1, mod_serie, test = "Chisq")
+AIC(mod_serie0, mod_serie1, mod_serie)
+```
+
+mod_serie: df=6 y AIC=299.4276
+
+Diagnósticos 
+
+```{r}
+testOutliers(mod_serie)
+testDispersion(mod_serie)
+```
+
+
+```{r}
+summary(mod_serie)
+
+tab_model(mod_serie)
+plot_model(mod_serie, 
+           terms = c("days", "geno"), 
+           type='pred', show.data=T)
+```
+
+
+Pred. lineal geno A = -3.18 + 0.024 * days
+(dias significativo para el geno A, ya que conforme transcurren los dias la incidencia aumenta)
+
+Pred. lineal geno B = (-3.275 + 0.147) + (0.025 + 0.99) * days 
+
+Interaccion significativa: las curvas son diferentes, deben ajustarse una por genotipo 
+
+## Predicción
+
+{ggeffects}
+ 
+Curva completa
+
+```{r}
+ggpredict(mod_serie, c( "days", "geno"))
+```
+
+Genotipo A - intervalo 100 a 110 ddi
+
+```{r}
+ggpredict(mod_serie, 
+          terms = "days [100:110]", 
+          condition = c(geno = c("A")))
+```
+
+Ambos genotipos para el DDI=100
+
+```{r}
+ggpredict(mod_serie, 
+          terms = "geno", 
+          condition = c(days = "100"))
+```
+
+#----------------------------
+## FIN 
+

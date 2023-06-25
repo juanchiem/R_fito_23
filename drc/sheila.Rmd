@@ -1,0 +1,1373 @@
+---
+title: 'Reproducible report: <br/> Phenotypic and molecular characterization of the resistance to strobilurins in Fusarium graminearum'
+output:
+  html_document:
+    css: style.css
+    depth: 5
+    number_sections: no
+    theme: default
+    toc: yes
+    toc_float:
+      collapsed: yes
+      smooth_scroll: yes
+date: 'Created: 2021-10-06 <br/>Last update: `r Sys.Date()`'
+---
+
+<link href="https://fonts.googleapis.com/css?family=Oswald" rel="stylesheet">
+
+
+
+### R Packages
+
+All packages loaded during this work.
+
+```{r message=FALSE, warning=FALSE}
+library(readxl)
+library(tidyverse)
+library(ec50estimator)
+library(cowplot)
+library(ggthemes)
+library(drc)
+library(ggridges)
+library(epiR)
+library(car)
+library(gsheet)
+library(patchwork)
+library(rnaturalearth)
+library(ggmap)
+library(ggrepel)
+library(lme4)
+library(lmerTest)
+library(ggsn)
+
+```
+
+### Isolates 
+
+All isolates used in this study with their location were loaded to plotting the map below.
+
+```{r}
+data_load = gsheet2tbl("https://docs.google.com/spreadsheets/d/1YTmns-Mjyz6HWluKN5ksHCpJfD_jshavGVI52oLfszU/edit#gid=1862629108") 
+
+data_load
+```
+
+### By year and state
+
+```{r}
+map_all  = data_load %>% 
+  group_by(safra, estado) %>%
+  summarise(n = length(Isolate)) 
+map_all
+```
+
+### By year in RS
+
+```{r}
+
+p1 <- map_all %>% 
+  filter(estado=="RS") %>% 
+ggplot(aes(factor(safra), y= n))+
+  ylim(0,60)+
+  geom_col( position = "dodge",width = 0.5, color="black",fill="black", alpha=0.6)+
+  scale_fill_colorblind()+
+  theme_minimal()+
+  labs(x = "Year", y = "Count of Isolates", fill="")
+
+ggsave("img/n_year_rs.png",width = 5, height = 3, dpi = 300)
+```
+
+### By year in PR
+
+
+```{r}
+
+p2 <- map_all %>% 
+  filter(estado=="PR") %>% 
+ggplot(aes(factor(safra), y= n))+
+  geom_col( position = "dodge",width = 0.5, color="black",fill="orange", alpha=0.6)+
+  scale_fill_colorblind()+
+  theme_minimal()+
+  labs(x = "Year", y = "Count of Isolates", fill="")
+
+ggsave("img/n_year_pr.png",width = 5, height = 3, dpi = 300)
+```
+
+
+
+```{r}
+#install.packages("devtools") 
+#devtools::install_github("ropensci/rnaturalearthhires")
+library("rnaturalearth")
+
+BRA <- ne_states(country = "Brazil",
+  returnclass = "sf")
+
+```
+
+### By municipality 
+
+```{r}
+map_all_1  = data_load %>% 
+  group_by(estado, município) %>%
+  summarise(n = length(Isolate),
+            lat=mean(lat), 
+            long= mean(long)) 
+map_all_1
+```
+
+###  Map of isolates
+
+```{r}
+
+p3 <- ggplot() +
+  geom_sf(data = BRA, fill = "white",color = "black")+
+geom_point(data = map_all_1, aes(as.numeric(long),as.numeric(lat), color= estado, fill= estado, size=n), shape = 21, width = 0.9)+
+geom_text_repel(data = map_all_1, aes(as.numeric(long),as.numeric(lat), label=(n)), size = 4, box.padding = 0.2, min.segment.length =1, seed = F, max.overlaps = Inf)+
+  xlim(-58,-48)+
+  ylim(-34,-23)+
+  #scale_size_continuous(breaks = seq(1,10, by = 1), range = c(1, 6))+
+  #facet_wrap(~safra,nrow = 2)+
+  theme_map()+
+  scale_color_manual(values = c("orange","black"))+
+  scale_fill_manual(values = c("orange","black"))+
+  guides(color=F, size=F)+
+  
+ # theme(legend.position = "none")+
+  labs(fill="", size="", x="", y="", color="" )+
+   annotate("text", x=-53, y=-24, label="PR", size=4)+
+  annotate("text", x=-54, y=-30, label="RS", size=4)
+ p3
+  ggsave("img/map_new_5.png", dpi= 600, height = 8, width = 8 )
+```
+
+```{r}
+library(patchwork)
+(p3 | (p2/p1)) +
+  plot_annotation(tag_levels = "A")+
+  plot_layout(widths = c(2, 1))
+ggsave("img/figure1.png", width =8, height =5)
+  
+```
+
+
+
+In this study, we phenotypically characterize Fusarium graminearum isolates to azoxystrobin and pyraclostrobin. 
+
+
+
+### EC50 - Pyra
+
+## Data
+
+This database contains information about all germination tests conducted, divided by: experiment and geographic collection.
+
+```{r}
+germination_assay<- gsheet2tbl("https://docs.google.com/spreadsheets/d/13uMSrA-gLXXhkgTKxrE0MjZX1ewLZGxnTUIpWCD-n64/edit#gid=1516403512") %>% 
+  group_by(Isolate, Dose, Replicates, Trail) %>%
+  dplyr::mutate(GC = as.numeric(GC)) %>%
+  dplyr::mutate(Dose = as.numeric(Dose))
+  
+germination_assay
+```
+
+## Visualization
+
+
+```{r}
+
+germination_assay %>% 
+  ggplot(aes(as.factor(Dose), GC, color=as.factor(Trail)))+
+    stat_summary(fun.data = "mean_cl_boot",
+               geom = "errorbar",
+               width = 0,
+               size =.5,
+               position = position_dodge(width=.5))+
+  stat_summary(fun = "mean",
+               size = 1.4,
+               geom = "point",
+               position = position_dodge(width=.5))+
+  facet_wrap(~Isolate)+
+  scale_color_colorblind()+
+  theme_minimal_hgrid(font_size = 6)+
+   labs(x = expression(Dose~~μg/ml), 
+        y = "Number of germinated conidia/dose", color="Trial")
+
+```
+
+
+## Models  
+
+Ten isolates were chosen to select the best model that fits all the data set.   
+
+Isolates: "09Tr006"
+
+```{r}
+g1<-germination_assay %>% 
+  filter(Isolate=="07Tr037")
+g1
+  
+```
+
+
+```{r}
+model_1=drm(GC~Dose, data=g1, fct = W1.3())
+plot(model_1)
+summary(model_1)
+ED(model_1,50)
+```
+
+
+
+
+```{r}
+mselect(model_1,fctList =list(LL.2(),LL.3(), LL.3u(),LL.4(),LL.5(),W1.2(), W1.3(),W1.3u(), W1.4(),W2.4(), W2.3(), W2.2(), BC.5(),LL2.2(), LL2.3(), LL2.3u(),LL2.4(),LL2.5(), AR.2(), AR.3(), MM.2(), MM.3()))
+```
+
+"UEM-2665"
+
+```{r}
+g2<-germination_assay %>% 
+  filter(Isolate=="08Tr005")
+g2
+```
+
+
+
+```{r}
+model_2=drm((GC)~Dose, data=g2, fct = W1.3())
+plot(model_2)
+summary(model_2)
+ED(model_2,50)
+```
+
+
+```{r}
+mselect(model_2,fctList =list(LL.2(),LL.3(), LL.3u(),LL.4(),LL.5(),W1.2(), W1.3(),W1.3u(), W1.4(),W2.4(), W2.3(), W2.2(),BC.4(), BC.5(),LL2.2(), LL2.3(), LL2.3u(),LL2.4(),LL2.5(), AR.2(), AR.3(), MM.2(), MM.3()))
+```
+"09Tr006"
+
+```{r}
+g3<-germination_assay %>% 
+  filter(Isolate=="09Tr006")
+g3
+```
+
+```{r}
+model_3=drm((GC)~Dose, data=g3, fct = LL.4())
+plot(model_3)
+summary(model_3)
+ED(model_3,50)
+```
+
+
+```{r}
+mselect(model_3,fctList =list(LL.2(),LL.3(), LL.3u(),LL.4(),LL.5(),W1.2(), W1.3(),W1.3u(), W1.4(),W2.4(), W2.3(), W2.2(),BC.4(), BC.5(),LL2.2(), LL2.3(), LL2.3u(),LL2.4(),LL2.5(), AR.2(), AR.3(), MM.2(), MM.3()))
+```
+
+"10Tr042"
+
+```{r}
+g4<-germination_assay %>% 
+  filter(Isolate=="10Tr042")
+g4
+```
+
+
+```{r}
+model_4=drm((GC)~Dose, data=g4, fct = W1.3())
+plot(model_4)
+summary(model_4)
+ED(model_4,50)
+```
+
+
+```{r}
+mselect(model_4,fctList =list(LL.2(),LL.3(), LL.3u(),LL.4(),LL.5(),W1.2(), W1.3(),W1.3u(), W1.4(),W2.4(), W2.3(), W2.2(),BC.4(), BC.5(),LL2.2(), LL2.3(), LL2.3u(),LL2.4(),LL2.5(), AR.2(), AR.3(), MM.2(), MM.3()))
+```
+
+"11Tr005"
+
+```{r}
+g5<-germination_assay %>% 
+  filter(Isolate=="11Tr005")
+g5
+```
+
+
+```{r}
+model_5=drm((GC)~Dose, data=g5, fct = W1.3())
+plot(model_5)
+summary(model_5)
+ED(model_5,50)
+```
+
+```{r}
+mselect(model_5,fctList =list(LL.2(),LL.3(), LL.3u(),LL.4(),LL.5(),W1.2(), W1.3(),W1.3u(), W1.4(),W2.4(), W2.3(), W2.2(),BC.4(), BC.5(),LL2.2(), LL2.3(), LL2.3u(),LL2.4(),LL2.5(), AR.2(), AR.3(), MM.2(), MM.3()))
+```
+
+"3072"
+
+```{r}
+g6<-germination_assay %>% 
+  filter(Isolate=="3072")
+g6
+```
+
+
+```{r}
+model_6=drm((GC)~Dose, data=g6, fct = W1.3())
+plot(model_6)
+summary(model_6)
+ED(model_6,50)
+```
+
+
+
+
+```{r}
+mselect(model_6,fctList =list(LL.2(),LL.3(), LL.3u(),LL.4(),LL.5(),W1.2(), W1.3(),W1.3u(), W1.4(),W2.4(), W2.3(), W2.2(),BC.4(), BC.5(),LL2.2(), LL2.3(), LL2.3u(),LL2.4(),LL2.5(), AR.2(), AR.3(), MM.2(), MM.3()))
+```
+
+"3708"
+
+```{r}
+g7<-germination_assay %>% 
+  filter(Isolate=="3708")
+g7
+```
+
+```{r}
+model_7=drm((GC)~Dose, data=g7, fct = W1.3())
+plot(model_7)
+summary(model_7)
+ED(model_7,50)
+```
+
+
+```{r}
+mselect(model_7,fctList =list(LL.2(),LL.3(), LL.3u(),LL.4(),LL.5(),W1.2(), W1.3(),W1.3u(), W1.4(),W2.4(), W2.3(), W2.2(),BC.4(), BC.5(),LL2.2(), LL2.3(), LL2.3u(),LL2.4(),LL2.5(), AR.2(), AR.3(), MM.2(), MM.3()))
+```
+
+"3712"
+
+```{r}
+g8<-germination_assay %>% 
+  filter(Isolate=="3712")
+g8
+```
+
+
+```{r}
+model_8=drm((GC)~Dose, data=g8, fct = W1.3())
+plot(model_8)
+summary(model_8)
+ED(model_8,50)
+```
+
+```{r}
+mselect(model_8,fctList =list(LL.2(),LL.3(), LL.3u(),LL.4(),LL.5(),W1.2(), W1.3(),W1.3u(), W1.4(),W2.4(), W2.3(), W2.2(),BC.4(), BC.5(),LL2.2(), LL2.3(), LL2.3u(),LL2.4(),LL2.5(), AR.2(), AR.3(), MM.2(), MM.3()))
+```
+
+"UEM-2628"
+
+```{r}
+g9<-germination_assay %>% 
+  filter(Isolate=="UEM-2628")
+g9
+```
+
+
+```{r}
+model_9=drm((GC)~Dose, data=g9, fct = LL.3())
+plot(model_9)
+summary(model_9)
+ED(model_9,50)
+```
+
+
+```{r}
+mselect(model_9,fctList =list(LL.2(),LL.3(), LL.3u(),LL.4(),LL.5(),W1.2(), W1.3(),W1.3u(), W1.4(),W2.4(), W2.3(), W2.2(),BC.4(), BC.5(),LL2.2(), LL2.3(), LL2.3u(),LL2.4(),LL2.5(), AR.2(), AR.3(), MM.2(), MM.3()))
+```
+
+"UEM-3687"
+
+```{r}
+g10<-germination_assay %>% 
+  filter(Isolate=="UEM-3687")
+g10
+```
+
+
+
+
+
+```{r}
+model_10=drm((GC)~Dose, data=g10, fct = W1.3())
+plot(model_10)
+summary(model_10)
+ED(model_10,50)
+```
+
+
+```{r}
+mselect(model_10,fctList =list(LL.2(),LL.3(), LL.3u(),LL.4(),LL.5(),W1.2(), W1.3(),W1.3u(), W1.4(),W2.4(), W2.3(), W2.2(),BC.4(), BC.5(),LL2.2(), LL2.3(), LL2.3u(),LL2.4(),LL2.5(), AR.2(), AR.3(), MM.2(), MM.3()))
+```
+
+
+
+## EC50 Pyra
+
+Calculation of Ec50 for the number of germinated conidia in relation to the dose, being stratified by year and population (RS, PR). The model was chosen through the tests performed above considering <IAC and best curve fit.
+
+Model: W1.3
+
+
+```{r}
+ec50_ger=estimate_EC50(GC~Dose,
+                data= germination_assay ,
+                isolate_col= "Isolate",
+                strata_col = c("Year", "Population"),
+                fct=drc::W1.3(),
+                interval="delta")
+ec50_ger
+
+```
+
+### Statistics 
+
+PARANÁ - PR
+
+```{r}
+ec50_ger %>% 
+  #filter(Population=="PR") %>% 
+  summarise(mean=mean(Estimate),
+            median=median(Estimate),
+            sd=sd(Estimate),
+            lower= quantile(Estimate, 0.25),
+            upper= quantile(Estimate, 0.75))
+   
+  
+  
+```
+
+RIO GRANDE DO SUL- RS
+
+```{r}
+ec50_ger %>% 
+  filter(Population=="RS") %>% 
+  summarise(mean=mean(Estimate),
+            median=median(Estimate),
+            sd=sd(Estimate),
+            lower= quantile(Estimate, 0.25),
+            upper= quantile(Estimate, 0.75))
+   
+  
+  
+```
+
+
+ALL ISOLATES 
+
+```{r}
+ec50_ger %>% 
+  filter(Population=="PR") %>% 
+  summarise(mean=mean(Estimate),
+            median=median(Estimate),
+            sd=sd(Estimate),
+            lower= quantile(Estimate, 0.25),
+            upper= quantile(Estimate, 0.75))
+   
+  
+  
+```
+
+
+##Anova
+
+
+```{r}
+aov_Ger<- lm(sqrt(Estimate)~Population,data= ec50_ger)
+summary(aov_Ger)
+Anova(aov_Ger)
+```
+
+## Homocedasticity
+
+```{r}
+leveneTest(Estimate~Population,data=ec50_ger)
+```
+
+##Normality
+
+```{r}
+shapiro.test(residuals(aov_Ger))
+```
+
+
+
+
+## Boxplot Ec50 
+
+```{r}
+box_pyra = ec50_total_pyra=ec50_ger %>% 
+  filter(Estimate<100) %>% 
+  ggplot(aes(Population, log(Estimate)))+
+  ylim(-6, 6)+
+  geom_jitter(size=2, color = "black", width = 0.05)+
+  geom_boxplot(width=0.5, outlier.color = NA, color= "black", fill = NA, size =1)+
+  scale_color_colorblind()+
+  #geom_hline(yintercept = .50, color="red")+
+  #annotate("text", x=2.5,y=0.55, label="DD", size=4, color="red")+
+  #facet_wrap("Population")+
+  theme_minimal_hgrid()+
+   labs(y = "log of EC50 ", 
+        x="")
+ggsave("img/box_PYRA.png", dpi = 500, height = 3.5, width = 5)
+
+box_pyra
+```
+
+
+### EC50 Azox 
+
+## Data
+
+This database contains information about all germination tests conducted, divided by: experiment and population.
+
+```{r}
+germination_assay_azox<-  gsheet2tbl("https://docs.google.com/spreadsheets/d/1Mis_iDuVrq8x_IpjJDdhAeNPKHiIAZfea9sljgI1sIw/edit#gid=0") %>% 
+  group_by(Isolate, Dose, Replicates, Trial) %>%
+  dplyr::mutate(GC = as.numeric(GC)) %>%
+  dplyr::mutate(Dose = as.numeric(Dose))
+  
+germination_assay_azox
+```
+
+##Visualization
+
+
+```{r}
+
+germination_assay_azox %>% 
+  ggplot(aes(as.factor(Dose), GC, color=as.factor(Trial)))+
+    stat_summary(fun.data = "mean_cl_boot",
+               geom = "errorbar",
+               width = 0,
+               size =.5,
+               position = position_dodge(width=.5))+
+  stat_summary(fun = "mean",
+               size = 1.4,
+               geom = "point",
+               position = position_dodge(width=.5))+
+  facet_wrap(~Isolate)+
+  scale_color_colorblind()+
+  theme_minimal_hgrid(font_size = 6)+
+   labs(x = expression(Dose~~μg/ml), y = "Number of germinated conidia/dose", color="")
+
+```
+
+
+
+
+##Models  
+
+Seven isolates were chosen to select the best model that fits all the data set.   
+
+Isolates: "07Tr012"
+
+
+
+```{r}
+a1<-germination_assay_azox %>% 
+  filter(Isolate=="07Tr012")
+a1
+  
+```
+
+
+
+```{r}
+az1=drm(GC~Dose, data=a1, fct = W2.3())
+plot(az1)
+summary(az1)
+ED(az1, 50)
+```
+
+
+
+```{r}
+mselect(az1,fctList =list(LL.2(),LL.3(), LL.3u(),LL.4(),LL.5(),W1.2(), W1.3(),W1.3u(), W1.4(),W2.4(), W2.3(), W2.2(), BC.5(),LL2.2(), LL2.3(), LL2.3u(),LL2.4(),LL2.5(), AR.2(), AR.3(), MM.2(), MM.3()))
+```
+
+"09Tr019"
+
+```{r}
+a2<-germination_assay_azox %>% 
+  filter(Isolate=="09Tr019")
+a2
+  
+```
+
+
+
+```{r}
+az2=drm(GC~Dose, data=a2, fct = W1.3())
+plot(az2)
+ggsave("img/az2.png", dpi = 500)
+summary(az2)
+ED(az2, 50)
+
+
+```
+
+
+
+```{r}
+mselect(az2,fctList =list(LL.2(),LL.3(), LL.3u(),LL.4(),LL.5(),W1.2(), W1.3(),W1.3u(), W1.4(),W2.4(), W2.3(), W2.2(), BC.5(),LL2.2(), LL2.3(), LL2.3u(),LL2.4(),LL2.5(), AR.2(), AR.3(), MM.2(), MM.3()))
+```
+
+"11Tr074"
+
+```{r}
+a3<-germination_assay_azox %>% 
+  filter(Isolate=="11Tr074")
+a3
+  
+```
+
+
+```{r}
+az3=drm(GC~Dose, data=a3, fct = W1.3())
+plot(az3)
+summary(az3)
+ED(az3, 50)
+```
+
+
+
+```{r}
+mselect(az3,fctList =list(LL.2(),LL.3(), LL.3u(),LL.4(),LL.5(),W1.2(), W1.3(),W1.3u(), W1.4(),W2.4(), W2.3(), W2.2(), BC.5(),LL2.2(), LL2.3(), LL2.3u(),LL2.4(),LL2.5(), AR.2(), AR.3(), MM.2(), MM.3()))
+```
+
+"3070"
+
+```{r}
+a4<-germination_assay_azox %>% 
+  filter(Isolate=="3070")
+a4
+  
+```
+
+
+```{r}
+az4=drm(GC~Dose, data=a4, fct = W1.3())
+plot(az4)
+summary(az4)
+ED(az4, 50)
+```
+
+```{r}
+mselect(az4,fctList =list(LL.2(),LL.3(), LL.3u(),LL.4(),LL.5(),W1.2(), W1.3(),W1.3u(), W1.4(),W2.4(), W2.3(), W2.2(), BC.5(),LL2.2(), LL2.3(), LL2.3u(),LL2.4(),LL2.5(), AR.2(), AR.3(), MM.2(), MM.3()))
+```
+
+"UEM-3688"
+
+```{r}
+a5<-germination_assay_azox %>% 
+  filter(Isolate=="UEM-3688")
+a5
+  
+```
+
+
+
+
+```{r}
+az5=drm(GC~Dose, data=a5, fct = W2.3())
+plot(az5)
+summary(az5)
+ED(az5, 50)
+```
+
+
+
+
+```{r}
+mselect(az5,fctList =list(LL.2(),LL.3(), LL.3u(),LL.4(),LL.5(),W1.2(), W1.3(),W1.3u(), W1.4(),W2.4(), W2.3(), W2.2(), BC.5(),LL2.2(), LL2.3(), LL2.3u(),LL2.4(),LL2.5(), AR.2(), AR.3(), MM.2(), MM.3()))
+```
+
+"UEM-2580"
+
+```{r}
+a6<-germination_assay_azox %>% 
+  filter(Isolate=="UEM-2580")
+a6
+  
+```
+
+
+```{r}
+az6=drm(GC~Dose, data=a6, fct = W2.3())
+plot(az6)
+summary(az6)
+ED(az6, 50)
+```
+
+
+```{r}
+mselect(az6,fctList =list(LL.2(),LL.3(), LL.3u(),LL.4(),LL.5(),W1.2(), W1.3(),W1.3u(), W1.4(),W2.4(), W2.3(), W2.2(), BC.5(),LL2.2(), LL2.3(), LL2.3u(),LL2.4(),LL2.5(), AR.2(), AR.3(), MM.2(), MM.3()))
+```
+
+"3711"
+
+```{r}
+a7<-germination_assay_azox %>% 
+  filter(Isolate=="3711")
+a7
+  
+```
+
+
+```{r}
+az7=drm(GC~Dose, data=a7, fct = W2.3())
+plot(az7)
+summary(az7)
+ED(az7, 50)
+```
+
+
+```{r}
+mselect(az7,fctList =list(LL.2(),LL.3(), LL.3u(),LL.4(),LL.5(),W1.2(), W1.3(),W1.3u(), W1.4(),W2.4(), W2.3(), W2.2(), BC.5(),LL2.2(), LL2.3(), LL2.3u(),LL2.4(),LL2.5(), AR.2(), AR.3(), MM.2(), MM.3()))
+```
+
+## EC50 Azox
+
+Calculation of Ec50 for the number of germinated conidia in relation to the dose, being stratified by year and population (RS, PR). The model was chosen through the tests performed above considering <IAC and best curve fit.
+
+Model: W1.3
+
+
+
+```{r}
+ec50_ger_AZX=estimate_EC50(GC~Dose,
+                data= germination_assay_azox ,
+                isolate_col= "Isolate",
+                strata_col = c("Year", "Population"),
+                fct=drc::W1.3(),
+                interval="delta")
+ec50_ger_AZX
+
+```
+
+
+### Statistics
+
+PARANÁ - PR
+
+```{r}
+ec50_ger_AZX %>% 
+  filter(Population=="PR") %>% 
+  summarise(mean=mean(Estimate),
+            median=median(Estimate),
+            sd=sd(Estimate),
+            lower= quantile(Estimate, 0.25),
+            upper= quantile(Estimate, 0.75))
+   
+  
+  
+```
+
+
+
+RIO GRANDE DO SUL - RS 
+
+
+```{r}
+ec50_ger_AZX %>% 
+  filter(Population=="RS") %>% 
+  summarise(mean=mean(Estimate),
+            median=median(Estimate),
+            sd=sd(Estimate),
+            lower= quantile(Estimate, 0.25),
+            upper= quantile(Estimate, 0.75))
+   
+  
+  
+```
+
+
+ALL ISOLATES
+
+```{r}
+ec50_ger_AZX %>% 
+  summarise(mean=mean(Estimate),
+            median=median(Estimate),
+            sd=sd(Estimate), 
+            lower_azox= quantile(Estimate, 0.25),
+            upper_azox= quantile(Estimate, 0.75))
+   
+  
+  
+```
+
+
+
+##Anova
+
+
+```{r}
+aov_Ger_azox<- lm((Estimate)~Population,data= ec50_ger_AZX)
+summary(aov_Ger_azox)
+Anova(aov_Ger_azox)
+```
+
+## Homocedasticity
+
+```{r}
+leveneTest(Estimate~Population,data=ec50_ger_AZX)
+```
+
+##Normality
+
+```{r}
+shapiro.test(residuals(aov_Ger_azox))
+```
+
+## GLM  
+
+
+```{r}
+glm_azox = glm(Estimate ~ Population , family = Gamma (link=log), data  = ec50_ger_AZX )
+summary(glm_azox)
+
+```
+
+
+
+
+
+##Boxplot Ec50 
+
+
+```{r}
+box_azox_2=ec50_total_azox=ec50_ger_AZX %>% 
+  ggplot(aes(Population, log(Estimate)))+
+  geom_jitter(size=2, color = "black", width = 0.05)+
+  ylim(-6,6)+
+  geom_boxplot(width=0.5, outlier.color = NA, color= "black", fill = NA, size =1)+
+  scale_color_colorblind()+
+   #geom_hline(yintercept = 5, color="red")+
+  #annotate("text", x=2.5,y=5.5, label="DD", size=4, color="red")+
+  #facet_wrap("Population")+
+  theme_minimal_hgrid()+
+   labs(y = "Log of EC50",
+        x="")
+ggsave("img/box_AZOX_2.png", dpi = 500, height = 3.5, width = 5)
+
+box_azox_2
+```
+
+
+
+
+
+
+
+## EC50  (both fungicides)
+
+Here we loaded in the same data frame the EC50 values for both fungicides. 
+
+```{r}
+ec50_fun= gsheet2tbl("https://docs.google.com/spreadsheets/d/116vNPmNBOEoH0oWIFZxV9B8gkkv-wcYJ_fhbW2rpBZU/edit#gid=1135537345")
+
+ec50_fun
+```
+
+## Boxplot (azox and pyra)
+
+```{r}
+
+box_azox_pyra <- ec50_fun %>% 
+  filter(Estimate<100) %>% 
+  ggplot(aes(Fungicide, log(Estimate)))+
+  geom_boxplot(width=0.5, outlier.color = NA,  size =1)+
+  ylim(-6, 6)+
+  geom_jitter(size=2, color = "black",fill="black", width = 0.05)+
+theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank())+
+  theme_minimal_hgrid()+
+  scale_fill_few()+
+   labs(x = "Fungicides",
+        y= "Log of EC50")+
+   theme(legend.position = "none")
+
+
+
+
+```
+
+
+
+## Figure 2
+
+
+```{r fig.height=4, fig.width=8}
+(box_azox_2 | box_pyra)+
+  plot_annotation(tag_levels = 'A')
+ggsave("img/figure2.png", width = 8, height =5)
+
+```
+
+## Correlation EC50
+
+```{r}
+
+cor_ec50= gsheet2tbl("https://docs.google.com/spreadsheets/d/116vNPmNBOEoH0oWIFZxV9B8gkkv-wcYJ_fhbW2rpBZU/edit#gid=0") %>% 
+  mutate(pyra=log(pyra)) %>% 
+  mutate(azox=log(azox))
+cor_ec50
+```
+
+```{r}
+
+cor.test((cor_ec50$azox), (cor_ec50$pyra), method ="spearman")
+```
+
+
+
+```{r}
+cor_ec50 %>% 
+  ggplot(aes(pyra, azox))+
+  #geom_smooth(method=lm)+
+  geom_point(shape=21, size=3)+
+  theme_minimal()+
+  labs(x =expression((Log)~EC[50]~~μg/ml~Pyraclostrobin), y = expression((Log)~EC[50]~~μg/ml~Azoxystrobin, color=""))
+
+ggsave("img/cor_ec50_log.png", dpi = 500)
+```
+
+
+
+
+
+
+### ISOLATE CML3066  
+
+We also calculated the EC50 for the isolates CML3066, which is a isolate from Brazil that has its genome sequenced. 
+
+```{r}
+
+EC50_P<- gsheet2tbl("https://docs.google.com/spreadsheets/d/1Mis_iDuVrq8x_IpjJDdhAeNPKHiIAZfea9sljgI1sIw/edit#gid=1606966266") %>% 
+   filter(Code =="GEN-P") %>% 
+   dplyr::mutate(GC = as.numeric(GC)) %>%
+  dplyr::mutate(Dose = as.numeric(Dose)) 
+ 
+  
+EC50_P
+```
+
+
+
+
+## EC50 CML3066 Pyra
+
+```{r}
+model_p=drm(GC~Dose, data=  EC50_P, fct = W1.3())
+plot(model_p)
+summary(model_p)
+ED(model_p,50)
+```
+
+
+
+
+### EC50- CML3066 Azox
+
+```{r}
+
+EC50_AZ<- gsheet2tbl("https://docs.google.com/spreadsheets/d/1Mis_iDuVrq8x_IpjJDdhAeNPKHiIAZfea9sljgI1sIw/edit#gid=1606966266") %>% 
+   filter(Code =="GEN") %>% 
+   dplyr::mutate(GC = as.numeric(GC)) %>%
+  dplyr::mutate(Dose = as.numeric(Dose)) 
+ 
+  
+EC50_AZ
+```
+
+
+
+
+## EC50 CML3066 Azox
+
+```{r}
+model_az=drm(GC~Dose, data=  EC50_AZ, fct = W1.3())
+plot(model_az)
+summary(model_az)
+ED(model_az,50)
+```
+
+
+### Discriminatory Dose
+
+We also screening isolates through discriminatory dose for each fungicide. 
+
+## Load data RS
+
+
+```{r}
+data_load_rs = gsheet2tbl("https://docs.google.com/spreadsheets/d/1xaHgZCiO85EwuowMlGKlvO1tlwG2SleaBG-L-5x4Enw/edit#gid=0") %>% 
+  mutate(Fungicide = factor(Fungicide, levels = c("Control", "Azoxtrobin","Pyraclostrobin" )))
+data_load_rs
+```
+
+## visualization 
+
+```{r}
+data_load_rs %>% 
+  ggplot(aes(Fungicide,conidia))+
+  geom_jitter()
+```
+## Single isolate
+
+```{r}
+single_rs  = data_load_rs %>% 
+  filter(Isolate == 1)  
+single_rs %>% 
+  ggplot(aes(Fungicide,conidia, color = factor(Trial)))+
+  geom_jitter(height = 0)
+  
+```
+
+### Glm
+
+```{r}
+glm_single = glm(conidia ~ Fungicide , family = poisson, data  = single_rs)
+summary(glm_single)
+
+coef(glm_single)[2:3]
+confint(glm_single)
+
+azox_single = c(exp(coef(glm_single)[2]), exp(confint(glm_single)[2,]))
+pyra_single = c(exp(coef(glm_single)[3]), exp(confint(glm_single)[3,]))
+```
+
+
+
+### Data frame (GLM results)
+
+```{r}
+isolates = unique(data_load_rs$Isolate)
+azox_all = NULL
+pyra_all = NULL
+
+for(i in 1:length(isolates)){
+single_df  = data_load_rs %>% 
+  filter(Isolate == isolates[i]) 
+
+glm_single = glm(conidia ~ Fungicide , family = poisson, data  = single_df)
+summary(glm_single)
+
+coef(glm_single)[2:3]
+confint(glm_single)
+
+azox_single = c(mean = as.numeric(exp(coef(glm_single)[2])), exp(confint(glm_single)[2,]), isol = isolates[i], year = unique(single_df$Year), local = unique(single_df$City),lat = unique(single_df$lat), long = unique(single_df$long), state= (single_df$State))
+pyra_single = c(mean = as.numeric(exp(coef(glm_single)[3])), exp(confint(glm_single)[3,]), isol = isolates[i], year = unique(single_df$Year),local = unique(single_df$City), lat = unique(single_df$lat), long = unique(single_df$long), state= (single_df$State))
+
+azox_all = rbind(azox_all, azox_single)
+pyra_all = rbind(pyra_all, pyra_single)
+
+}
+
+results_rs = bind_rows(
+  
+as.data.frame(azox_all) %>% 
+  mutate(fungicide = "Azoxystrobin"),
+
+as.data.frame(pyra_all) %>% 
+  mutate(fungicide = "Pyraclostrobin")
+
+)
+```
+
+
+## Data frame reorganization 
+
+```{r}
+results_rs_1<-results_rs %>%  
+summarise(mean=as.numeric(mean), 
+         lower=as.numeric(`2.5 %`),
+         upper= as.numeric(`97.5 %`),
+        lat=as.numeric(lat),
+        long=as.numeric(long), 
+        isolate= as.numeric(isol),
+        fungicide=fungicide, 
+        year=year, 
+        state=state1) 
+results_rs_1
+```
+
+
+## Boxplot (all isolates)
+```{r}
+box_1=results_rs_1 %>% 
+  ggplot(aes(fungicide, mean), color=lower>0.5)+
+  ylim(0,1)+
+  geom_jitter(size=2, width = 0.2, color="gray")+
+  geom_boxplot(width=0.5, outlier.color = NA, color= "black", fill = NA, size =1)+
+  scale_color_colorblind()+
+   geom_hline(yintercept = 0.5, color="red")+
+  #annotate("text", x=2.5,y=5.5, label="DD", size=4, color="red")+
+  #facet_wrap("Population")+
+  theme_minimal()+
+   labs(y = "",
+        x="")
+
+box_1
+#ggsave("img/box_AZOX.png", dpi = 500, height = 3.5, width = 5)
+
+
+```
+
+
+## Less sensitive year, Pyra, RS
+
+```{r fig.height=5, fig.width=5}
+results_rs_2 <- results_rs_1 %>% 
+  filter(fungicide== "Pyraclostrobin")
+
+dd_1=results_rs_2 %>% 
+  ggplot(aes(year, mean, group=lower, color=lower>0.5))+
+  geom_hline(yintercept = .50, color="red")+
+  scale_color_colorblind()+
+  scale_y_continuous(limits = c(0, 1.2))+
+  geom_jitter(position= position_dodge(width = 1))+
+  geom_errorbar(aes(ymin = lower, ymax = upper, color = lower>0.5), width=1, position= position_dodge(width = 1), size=0.3)+
+  #facet_wrap(~fungicide, ncol = 1)+
+theme_minimal(base_size = 18)+
+   labs(x="", y="", color="LL IC95")+
+  theme(legend.position = "none")
+
+
+  
+dd_1
+ggsave("img/dd_rs_2.png",dpi= 600, height = 8, width = 8)
+```
+
+## Less sensitive, year, Azox, RS
+
+```{r fig.height=5, fig.width=5}
+results_rs_3 <- results_rs_1 %>% 
+  filter(fungicide== "Azoxystrobin")
+
+dd_2=results_rs_3 %>% 
+  ggplot(aes(year, mean, group=lower, color=lower>0.5))+
+  geom_hline(yintercept = .50, color="red")+
+  scale_color_colorblind()+
+  scale_y_continuous(limits = c(0, 1.2))+
+  geom_jitter(position= position_dodge(width = 1))+
+  geom_errorbar(aes(ymin = lower, ymax = upper, color = lower>0.5), width=1, position= position_dodge(width = 1), size=0.3)+
+  theme_minimal(base_size = 18)+
+  labs(x="Year", y="", color="LL IC95")+
+  theme(legend.position = "none")
+
+  
+dd_2
+
+```
+
+
+
+
+## Proportion by year 
+
+```{r}
+results_freq<-results_rs_1 %>% 
+group_by( fungicide, year) %>% 
+  mutate(n_isolates=length(isolate)) %>% 
+  filter(lower>0.5) %>% 
+  summarise(count=n(), 
+            prop=(count/mean(n_isolates))*100)
+  
+
+
+results_freq
+
+
+```
+
+## Less sensitive, year, RS
+
+```{r fig.height=10, fig.width=12}
+dd_2+dd_1+plot_annotation(tag_levels = list(c("A", "B")))+plot_layout(ncol = 2)+
+  labs(y= "")
+
+ggsave("img/dd_all_all.png",dpi= 500, height = 8, width = 14)
+```
+
+
+
+
+## Load data - Paraná
+
+
+```{r}
+data_load_pr = gsheet2tbl("https://docs.google.com/spreadsheets/d/1xaHgZCiO85EwuowMlGKlvO1tlwG2SleaBG-L-5x4Enw/edit#gid=29082389") %>% 
+  mutate(Fungicide = factor(Fungicide, levels = c("Control", "Azoxtrobin","Pyraclostrobin" ))) %>% 
+  filter(!is.na(conidia))
+data_load_pr
+```
+
+
+
+## visualization
+
+```{r}
+data_load_pr %>% 
+  ggplot(aes(Fungicide,conidia))+
+  geom_jitter()
+```
+
+## Single isolate
+
+```{r}
+single_pr  = data_load_pr %>% 
+  filter(Isolate == 6040)  
+single_pr %>% 
+  ggplot(aes(Fungicide,conidia, color = factor(Trial)))+
+  geom_jitter(height = 0)
+  
+```
+
+### Glm
+
+```{r}
+glm_single_pr = glm(conidia ~ Fungicide , family = poisson, data  = single_pr)
+summary(glm_single_pr)
+
+coef(glm_single_pr)[2:3]
+confint(glm_single_pr)
+
+azox_single_pr = c(exp(coef(glm_single_pr)[2]), exp(confint(glm_single_pr)[2,]))
+pyra_single_pr = c(exp(coef(glm_single_pr)[3]), exp(confint(glm_single_pr)[3,]))
+```
+
+## Data frame Paraná
+
+```{r}
+isolates = unique(data_load_pr$Isolate)
+azox_all_pr = NULL
+pyra_all_pr = NULL
+
+for(i in 1:length(isolates)){
+single_df_pr  = data_load_pr %>% 
+  filter(Isolate == isolates[i]) 
+
+glm_single_pr = glm(conidia ~ Fungicide , family = poisson, data  = single_df_pr)
+summary(glm_single_pr)
+
+# coef(glm_single_pr)[2:3]
+# confint(glm_single_pr)
+
+azox_single_pr = c(mean = as.numeric(exp(coef(glm_single_pr)[2])), exp(confint(glm_single_pr)[2,]), isol = isolates[i], year = unique(single_df_pr$Year), state= (single_df_pr$State))
+pyra_single_pr = c(mean = as.numeric(exp(coef(glm_single_pr)[3])), exp(confint(glm_single_pr)[3,]), isol = isolates[i], year = unique(single_df_pr$Year), state= (single_df_pr$State))
+
+azox_all_pr = rbind(azox_all_pr, azox_single_pr)
+pyra_all_pr = rbind(pyra_all_pr, pyra_single_pr)
+
+}
+
+results_pr = bind_rows(
+  
+as.data.frame(azox_all_pr) %>% 
+  mutate(fungicide = "Azoxystrobin"),
+
+as.data.frame(pyra_all_pr) %>% 
+  mutate(fungicide = "Pyraclostrobin")
+
+)
+results_pr
+```
+
+
+## Data frame reorganization
+
+```{r}
+results_pr_1<-results_pr %>%  
+summarise(mean=as.numeric(mean), 
+         lower=as.numeric(`2.5 %`),
+         upper= as.numeric(`97.5 %`),
+        isolate= as.numeric(isol),
+        fungicide=fungicide, 
+        year=year, 
+        state= state1) 
+head(results_pr_1)
+```
+
+## Boxplot (all isolates)
+
+```{r}
+box_2=results_pr_1 %>% 
+  ggplot(aes(fungicide, mean), color=lower>0.5)+
+  ylim(0,1)+
+  geom_jitter(size=2, width = 0.2, color="gray")+
+  geom_boxplot(width=0.5, outlier.color = NA, color= "black", fill = NA, size =1)+
+  scale_color_colorblind()+
+   geom_hline(yintercept = 0.5, color="red")+
+  #annotate("text", x=2.5,y=0.6, label="DD", size=4, color="red")+
+  #facet_wrap("Population")+
+  theme_minimal()+
+   labs(y = "",
+        x="Fungicides")
+box_2
+#ggsave("img/box_AZOX.png", dpi = 500, height = 3.5, width = 5)
+
+
+```
+
+
+```{r fig.height=10, fig.width=12}
+box_1+box_2+plot_annotation(tag_levels = list(c("A", "B")))+plot_layout(ncol = 2)+
+  labs(y= "")
+
+ggsave("img/box_all.png",dpi= 500, height = 8, width = 12)
+```
+
+## Join data frame
+
+Here we loaded in the same data frame all values for the discriminatory dose for both fungicides.
+
+```{r}
+DD_ALL= full_join(results_rs_1, results_pr_1) 
+
+head(DD_ALL)
+```
+
+## Boxplot DD
+
+```{r}
+DD_ALL %>% 
+  ggplot(aes(state, mean, fill= fungicide))+
+  ylim(0,1)+
+  geom_boxplot(width=0.5, outlier.color = NA, size =1,  alpha=0.3)+
+    geom_jitter(size=1, width = 0.2, color="black")+
+  scale_fill_manual(values = c("15","gray90"))+
+  #scale_color_colorblind()+
+   geom_hline(yintercept = 0.5, color="red")+
+  #annotate("text", x=2.5,y=0.6, label="DD", size=4, color="red")+
+  facet_wrap(~fungicide)+
+  theme_minimal()+
+   theme(legend.position = "none")+
+   labs(y = "Prop of germinated conidia on the DD in relation to control ",
+        x="Collection")
+ggsave("img/box_all.png", dpi = 500, height = 6, width = 6)
+
+
+```
+
+
+
+
+
+
+

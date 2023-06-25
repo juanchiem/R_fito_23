@@ -1,0 +1,448 @@
+---
+title: "Untitled"
+output: html_document
+date: '2022-05-21'
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+# https://olivoto.netlify.app/tutorials/pliman_ip/04_phytopathometry/}
+# https://tiagoolivoto.github.io/pliman_tut/00_about.html
+```
+
+# Setup
+
+```{r setup, include=FALSE}
+# install.packages("BiocManager")
+# BiocManager::install("EBImage")
+# install.packages(devtools)
+# devtools::install_github ("TiagoOlivoto/pliman")
+pacman::p_load(tidyverse, pliman, here, epiR)
+conflicted::conflict_prefer("filter", "dplyr")
+conflicted::conflict_prefer("select", "dplyr")
+```
+
+# OPP 
+
+Reproduciremos el post de Open Plant Pathology escrito por Emerson del Ponte
+
+```{r}
+# https://openplantpathology.org/posts/2021-05-31-measuring-plant-disease-severity-using-the-pliman-r-package/
+```
+
+Noten que pliman requiere R version 4 y el paquete "EBImage" (este paso se hace una sola vez)
+
+
+* Indicar background (b), sano (h) y sintomatico (s) 
+
+```{r}
+h <- image_import("sbr_franceschi/sbr_h.png")
+s <- image_import("sbr_franceschi/sbr_s.png")
+b <- image_import("sbr_franceschi/sbr_b.png")
+```
+
+Pedimos que muestre cada imagen indicada anteriormente:
+
+```{r}
+image_combine(h, s, b, ncol = 3)
+```
+
+* Imagen individual 
+
+Importamos una solo imagen 
+
+```{r}
+here()
+# setwd(here::here())
+img46 <- image_import("sbr_franceschi/img46.png", plot=TRUE)
+```
+
+Pedimos estimar %sintomático / %sano  
+
+```{r}
+measure_disease(img = img46,
+                img_healthy = h,
+                img_symptoms = s,
+                img_background = b,
+                show_image = TRUE,
+                show_contour = FALSE, 
+                col_lesions = "red")
+```
+
+Y ahora que se haga la magia con todas las imagenes contenidas en una carpeta! 
+
+* Múltiples imagenes 
+
+```{r}
+sbr_lote <- measure_disease(
+  dir_original = "sbr_franceschi" ,
+  pattern = "img",
+  img_healthy = h,
+  img_symptoms = s,
+  img_background = b,
+  dir_processed = here::here("sbr_franceschi/processed"),
+  show_image = FALSE, 
+  save_image = TRUE, 
+  show_contour = FALSE,
+  col_lesions = "brown"
+  )
+```
+
+WTF! 
+
+```{r}
+sbr_pliman <- sbr_lote$severity
+sbr_pliman
+```
+
+* Cuán buenas son las estimaciones hechas con pliman??
+
+Estas imagenes evaluadas con pliman fueron evaluadas anteriormente con el software Quant (de conocida precision)
+
+```{r}
+sbr_quant <- tribble(
+  ~img, ~actual,
+  "img5",     75,
+  "img11",     24,
+  "img35",     52,
+  "img37",     38,
+  "img38",     17,
+  "img46",      7,
+  "img63",    2.5,
+  "img67",   0.25,
+  "img70",     67,
+  "img75",     10
+)
+```
+
+Fusionamos los data frames pliman y quant
+
+```{r}
+sbr <- left_join(sbr_pliman, sbr_quant)
+sbr
+```
+
+Visualizamos la confrontacion de las mediciones por ambos métodos, en eje x el "standard gold"y en y el que estamos poniendo a prueba:
+
+```{r}
+sbr %>% 
+  ggplot(aes(actual, symptomatic))+
+  geom_point()+
+  ylim(0,100)+
+  xlim(0,100)+
+  geom_abline(slope = 1, intercept = 0)+
+  theme_bw()+
+  labs(x = "Quant", 
+       y = "pliman") + 
+  coord_equal()
+```
+
+Calculamos el coeficiente de correlacion de concordancia entre variables continuas de Lin's (1989, 2000) del paquete "epiR" (llamado en el chunk de session setup)
+
+```{r}
+ccc <- epi.ccc(sbr$actual, sbr$symptomatic)
+ccc
+```
+
+que tal??
+
+# Severidad de mildiu en colza
+
+Me situo en la la carpeta que contiene el set de fotos a procesar
+
+```{r}
+getwd()
+setwd(here::here("mildiu_pics"))
+files <- list.files()%>% data.frame 
+getwd()
+```
+
+Indicamos cuales son los pixeles correspondientes a: 
+* healthy-sano 
+* diseased-enfermo 
+* background - fondo 
+
+```{r}
+h <- image_import("health.png")
+d <- image_import("dis.png")
+b <- image_import("back.png")
+image_combine(h, d, b, ncol = 3)
+```
+
+## Muestra individual
+
+Importación
+
+```{r}
+img_ctrol_1.1 <- image_import("ctrol_1-2.png", plot = TRUE)
+```
+
+procesamiento 
+
+```{r}
+sev_img_ctrol_1.1 <- 
+  measure_disease(img = img_ctrol_1.1,
+                  img_healthy = h,
+                  img_symptoms = d,
+                  img_background = b)
+sev_img_ctrol_1.1
+```
+
+## Batch processing
+
+Ahora pedimos que procese todas las hojas que responden al patron indicado en su nombre de archivo, en este caso que contienen el simbolo "_"
+
+```{r}
+sev_lote <- 
+    measure_disease(pattern = "_",
+                    img_healthy = h,
+                    img_symptoms = d,
+                    img_background = b,
+                    show_image = FALSE,
+                    save_image = TRUE,
+                    dir_processed = here::here("mildiu_pics", "processed"),
+                    show_contour = FALSE)
+```
+
+
+```{r}
+sev_lote
+```
+
+vemos que es una lista de cuyo elementos nos interesa el dataframe $severity
+
+```{r}
+sev_df <- sev_lote$severity
+sev_df
+```
+
+`ctrol` = "Testigo",
+`inf` = "Fluopicolide + Propamocarb" , 
+`ra` = "Ciazofamid"
+
+```{r}
+sev_mildiu <- sev_df %>% 
+  separate(img, c("trat", "rep", "pl")) %>% 
+  group_by(trat, rep) %>% 
+  summarise(sev_cond=mean(symptomatic)) %>%  
+  ungroup() %>% 
+  mutate_at(vars(trat, rep), as.factor)
+sev_mildiu
+```
+
+## Incidencia
+
+Datos de incidencia a nivel de parcela
+
+```{r}
+inc_mildiu  <- rio::import("incmildiu.txt")%>% 
+  mutate_at(vars(trat, rep), as.factor)  
+
+inc_mildiu
+str(inc_mildiu)
+```
+
+## Joint-data
+
+```{r}
+dis_mildiu <- inc_mildiu %>% left_join(sev_mildiu)
+dis_mildiu
+```
+
+Calculamos severidad media
+
+```{r}
+dis_mildiu <- dis_mildiu %>% 
+  # group_by(trat, rep) %>% 
+  mutate(sev_media = sev_cond * (y/n))
+dis_mildiu
+```
+
+
+```{r}
+dis_mildiu
+# save(dis_mildiu, file=here::here("mildiu_pics/mild.Rdata"))
+```
+
+```{r}
+dis_mildiu %>% 
+  ggplot(aes(x=trat, y=y/n*100)) + 
+  geom_boxplot() + 
+  geom_point() + 
+  labs(title = "Incidencia")
+
+dis_mildiu %>% 
+  ggplot(aes(x=trat, y=sev_cond)) + 
+  geom_boxplot() + 
+  geom_point() + 
+  labs(title = "Severidad condicional")
+
+dis_mildiu %>% 
+  ggplot(aes(x=trat, y=sev_media)) + 
+  geom_boxplot() + 
+  geom_point() + 
+  labs(title = "Severidad media")
+```
+
+
+## SAD
+
+```{r}
+sad(sbr_lote, n = 8, ncol = 3)
+```
+
+# Otros
+
+Tamaño de lesiones
+
+```{r}
+setwd(here::here())
+rust <- image_import("pliman_pics/img_1.jpeg",  plot = TRUE)
+```
+
+
+```{r}
+h <- image_import("pliman_pics/h_img1.png")
+d <- image_import("pliman_pics/d_img1.png")
+b <- image_import("pliman_pics/b_img1.png")
+image_combine(rust, h, d, b, ncol = 4)
+```
+
+
+```{r}
+feat <- 
+  measure_disease(img = rust,
+                  img_healthy = h,
+                  img_symptoms = d,
+                  img_background = b,
+                  show_image = TRUE,
+                  show_features = TRUE, # computa características das lesões
+                  lesion_size = "medium") # padrão
+# save()
+```
+
+```{r}
+feat$statistics
+head(feat$shape)
+```
+
+```{r}
+feat2 <- 
+  measure_disease(img = rust,
+                  img_healthy = h,
+                  img_symptoms = d,
+                  img_background = b,
+                  show_image = TRUE,
+                  show_features = TRUE, # computa características das lesões
+                  tolerance = 0.2) 
+```
+
+```{r}
+feat2$statistics
+head(feat2$shape)
+```
+
+## Conteos
+
+```{r}
+huevos <- image_import("pliman_pics/ovos.jpg", plot = TRUE)
+```
+
+```{r}
+huevos_cont <- 
+  measure_disease(huevos,
+                  index_lb = "HUE2",
+                  index_dh = "GRAY",
+                  invert = c(FALSE, TRUE),
+                  threshold = c("Otsu", 0.7),
+                  show_features = TRUE,
+                  show_segmentation = TRUE,
+                  show_contour = FALSE)
+huevos_cont$statistics
+```
+
+Here, we will count the grains in the grains.jpg image. This image has a cyan background and contains 90 soybeans that touch each other. 
+
+```{r}
+grains <- image_import("pliman_pics/grains.jpg", plot = TRUE)
+```
+
+```{r}
+count <-
+  analyze_objects(grains,
+                  show_segmentation = TRUE,
+                  show_contour = FALSE,
+                  marker = "id")
+```
+
+```{r}
+count$statistics
+```
+
+```{r}
+count700 <- analyze_objects(grains,
+                            marker = "id",
+                            lower_size = 670)
+count700
+```
+
+## Area de la colonia
+
+```{r}
+# getwd()
+# list.files()
+# az <- image_import("mildiu_pics/az@0_1.png", plot=TRUE)
+az <- image_import("pliman_pics/micelio1.jpg", plot=TRUE)
+# az1 <-image_segment_mask(az, size = 310)
+```
+
+Indico alguna referencia de tamaño conocido 
+
+```{r}
+x11(); 
+A <- dpi(az)
+A
+# [1] 86.68559
+```
+
+
+```{r}
+x11() 
+back <- pick_palette(az)
+plot(back)
+```
+
+
+```{r}
+x11() 
+fore <- pick_palette(az)
+plot(fore)
+```
+
+
+```{r}
+# back <- image_import("mildiu_pics/micelio_fondo.png")
+# fore <- image_import("mildiu_pics/micelio_frente.png")
+# b <- image_import("back.png")
+```
+
+```{r}
+res_az <- analyze_objects(az,
+                background = back,
+                foreground = fore,
+                filter = 2,
+                index = "(G+B)^3-R",
+                watershed = FALSE,
+                contour_size = 3,
+                contour_col = "red")
+
+get_measures(res_az, dpi = 87) %>% 
+  plot_measures(measure = "area", col = "blue")
+
+pi * (4.5^2)
+20.5/63.6
+```
+
+
+
