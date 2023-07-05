@@ -1,0 +1,183 @@
+---
+title: "GLM binomial DBCA - Phomopsis en frutilla"
+editor_options: 
+  chunk_output_type: inline
+---
+
+## Phomopsis Leaf Blight and Fruit Rot of Strawberry
+
+Michael A. Ellis and Mizuho Nita, Department of Plant Pathology (OSU)
+
+Phomopsis leaf blight is a common disease of strawberry in the eastern United States Although the fungus infects leaves early in the growing season, leaf blight symptoms are most apparent on older leaves near or after harvest in Ohio. The economic importance of leaf blight in Ohio appears to be relatively minor; however, incidence of the disease has been increasing. The disease can weaken strawberry plants through the destruction of older foliage. Weakened plants can result in reduced yields the following year. In years highly favorable for disease development, leaf blight can cause defoliation and, in some cases, death of plants.
+
+![Symptoms of Phomopsis leaf blight in later stages of disease development. Note the V-shaped lesions caused by coalescing leaf spots.](img/phomopsis.png){fig-align="center"}
+
+## Setup
+
+Cargamos paquetes de utilidad para esta sesión y configuramos la estética global de los gráficos.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+# if (!require("pacman")) install.packages("pacman")
+
+pacman::p_load(rio, tidyverse,  # manipulacion general de datos
+               skimr,      # exploracion de datos
+               lme4,       # ajuste de modelos mixtos
+               DHARMa,     # diagnosticos de GLM
+               performance,# diagnosticos de LM 
+               sjPlot, knitr,    # visualizacion de outputs
+               emmeans,    # medias predichas por los modelos y comparaciones
+               multcomp, multcompView)   # letras de test de comparaciones multiples
+
+theme_set(theme_bw())
+```
+
+## Data
+
+> Madden, L. V., W. W. Turechek, and M. Nita. "Evaluation of generalized linear mixed models for analyzing disease incidence data obtained in designed experiments." *Plant Disease* 86.3 (2002): 316-325.
+
+```{r}
+phom_raw <- import("https://raw.githubusercontent.com/juanchiem/glm_webinar/main/data/phomopsis.csv") %>% tibble
+# phom_raw <- rio::import("data/phomopsis.csv") %>% tibble 
+```
+
+**Efecto de tratamientos de fungicidas sobre tizon foliar por Phomopsis en frutilla (Nita, Madden & Ellis)**
+
+-   Patógeno: *Phomopsis obscurans*
+
+-   Diseño en bloques completos aleatorizados (RCBD)
+
+-   Cuatro bloques (bk, j = 1, ..., 4)
+
+-   Ocho tratamientos: control no tratado + 7 fungicidas (trt, i = 1, ..., 8) aleatorizados dentro de cada bloque
+
+-   Variable respuesta (Y): Numero de foliolos enfermos
+
+-   n Tamaño de la muestra
+
+-   Incidencia por parcela = y/n
+
+## Acondicionamiento
+
+```{r}
+phom_raw  
+
+# Factorizamos nuestros variables independientes (predictoras) y calculamos la incidencia en proporción 
+
+phom_dat <- phom_raw %>% 
+  mutate_at(vars(trt, bk), as.factor) %>% 
+  mutate(inc=y/n) %>% 
+  arrange(trt)
+phom_dat
+```
+
+```{r}
+phom_dat %>% 
+  group_by(trt) %>% 
+  skim(inc)
+```
+
+## Visualización
+
+```{r}
+phom_dat %>% 
+  ggplot() + 
+  aes(x=trt, y = inc) + 
+  geom_boxplot(alpha=.5, width = .2) + 
+  geom_point(alpha=.7) + 
+  labs(x="Tratamientos", y="Incidencia (proporción)")
+```
+
+## Modelo lineal - LM
+
+(Abordaje erróneo)
+
+Efecto fijo al tratamiento y aleatorio a los bloques
+
+```{r}
+# pacman::p_load(lmerTest)
+mod_phom_LM <- lmer(inc ~ trt + (1|bk), data=phom_dat)
+```
+
+### Diagnósticos
+
+```{r}
+check_homogeneity(mod_phom_LM)
+check_normality(mod_phom_LM)
+```
+### ANOVA
+
+```{r}
+car::Anova(mod_phom_LM)
+summary(mod_phom_LM)
+```
+Podriamos avanzar con el modelo, hacia la estimación de medias predichas por el mismo
+
+```{r}
+em_phom_LM <- emmeans(mod_phom_LM, ~ trt, type="response")
+
+# comparaciones multiples 
+res_phom_LM <- cld(em_phom_LM, Letters = letters, alpha = .05, type = "response")
+res_phom_LM
+plot_model(mod_phom_LM, type='pred', show.data=T)
+```
+
+• Los errores estándar estimados (SE) son todos incorrectos (por definición), deben ser funciones de la media para datos binomiales
+
+• Los SE incorrectos darán pruebas incorrectas de significación para los efectos del tratamiento y conducirán a conclusiones incorrectas
+
+## Modelo lineal generalizado - GLM
+
+Proporción de éxitos / total muestra (incidencia)
+
+```{r}
+mod_phom_GLM <- glmer(inc ~ trt + (1|bk), 
+                       family="binomial", 
+                       weights = n, # pesos o tamaño de muestra
+                       data=phom_dat)
+```
+
+### Diagnósticos
+
+[{DHARMa}](https://cran.r-project.org/web/packages/DHARMa/vignettes/DHARMa.html#goodness-of-fit-tests-on-the-scaled-residuals)
+
+```{r}
+simulateResiduals(mod_phom_GLM) %>% plot()
+```
+
+### Deviance - Wald chisquare tests
+
+```{r}
+car::Anova(mod_phom_GLM, type = "III")
+```
+
+```{r}
+# install.packages("jtools")
+library(jtools)
+summ(mod_phom_GLM, exp = T, confint = T)
+```
+
+```{r, eval=FALSE}
+tab_model(mod_phom_GLM)
+```
+
+> La chance de un foliolo de frutilla presentar sintoma de phomopsis disminuye un 51% cuando se aplica el tratamiento 2 respecto al control sin tratar
+
+### Medias predichas por el modelo ajustado y comparaciones multiples
+
+```{r}
+em_phom_GLM <- emmeans(mod_phom_GLM, ~ trt, type="response")
+res_phom_GLM <- cld(em_phom_GLM, Letters = letters, alpha = .05, type = "response")
+kable(res_phom_GLM)
+```
+
+### LM vs GLM
+
+```{r}
+kable(res_phom_LM)
+```
+
+> Tratamientos 7, 5, 6, 3 y 4 no diferían entre si bajo LM, pero bajo GLM trat 3 y 4 son inferiores en su perfomance respecto a 7, 5 y 6.
+
+> Tratamientos 2 y 8 no diferian del testigo sin tratar bajo LM, pero si bajo abordaje GLM.

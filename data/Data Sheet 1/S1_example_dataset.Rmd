@@ -1,0 +1,1341 @@
+---
+title: "Approaches to analyze experimental *R. solanacearum* infections:\n*Supplementary Material 1:* R Code and explanations" 
+author: "Niklas Schandry"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: yeti
+    highlight: kate
+---
+
+# General information on this document
+This document is part of the supplementary material of "A practical guide to descriptive and statistical analysis of R. solanacearum infection data using R". Here, I aim to convey how the analysis described in the main text can be performed. In this file, S1, a modified version of the Wang et al. dataset is used. 
+
+# Data Type
+The disease index score is based the severity of symptoms. A symptom read-out (usually "% wilted leaves") is turned into a numeric score. This score ranges from 0-4, and each number is used to reflect a certain interval of disease severity. The value of the disease index can never be below 0, or above 4. Therefore, the disease index is not a continuous response variable, but is ordinal. 
+However, for simplicity and consistency with published analysis, i will treat the disease index as if it was a continuous variable.
+If the disease index is distributed normally this should be okay.
+
+# Data Import, Formatting and preparation
+
+## Specifying the data
+Initially, data has to be read into R. Before data can be read, the directory containing the data needs to be specified and set. In R this is called the working directory. Anything that is read into, or exported from R will use this directory unless explicitly pointed to a different directory.
+
+```{r workingdirectory, eval=F}
+###Install all required packages:
+install.packages(c("MESS","lme4","lmerTest","multcomp","survival","rms","coxme","stargazer","tidyverse","rcompanion"))
+#biocLite("survcomp")
+###Define Working Directory and set it
+###Note for the Markdown version: R-Markdown cannot set the working directory
+###R markdown will always use the directory the .Rmd file is located in
+###In the .Rmd file this code section is not actually evaluated and only serves illustratory purpose.
+wd <- c("~/My_Data/DataDirectory/")
+setwd(wd)
+````
+
+Next, the dataset is specified.
+
+```{r input definition}
+###Name of the file to be read
+table <- c("S1_dataset.csv") 
+````
+
+The dataset used here ("S2_data.csv") is a pseudonymized and partially edited version of the dataset presented in Wang et al., 2015, kindly provided by Nemo Peeters. Strain3 and Strain4 have been edited to serve illustratory purpose.
+
+## Reading data and formatting
+The data can be read into *R* and stored in a data frame. I am calling that data frame disease_index
+````{r read data, eval=T}
+disease_index <- as.data.frame(read.table(table, header=T,
+                                          sep=";" , ###Sets the seperator of the csv file
+                                          dec=","), ###Sets the decimal operator of the csv file
+                                          stringsAsFactors=F) ###
+````
+
+  Using str() one can see if the table was properly imported.
+````{r inspect structure}
+str(disease_index)
+````
+  If the table was properly imported, "Xnumber" columns should be either numeric, or logical (if they were empty).
+If this is the case, generation of a "subject"" column helps further analysis, which assings a unique, numeric identifier to each individual.
+Strain, Plant and Batch columns need to be factors. If this is not the case this can be coerced to a factor by, e.g. "di_long$Strain <- as.factor(di_long$Strain)"
+
+````{r add subject}
+disease_index$subject <- c(1:nrow(disease_index))
+````
+
+  Now, the table of disease index recordings, needs to converted into long format for later analysis, conforming with a data structure often referred to as "tidy" (Wickham, 2008) . Long format means, that instead of having one column of each day, a new column is generated that indicates the day post infection (DPI). 
+````{r load tidyr, message=F}
+library("tidyr")
+```
+````{r generate long table}
+di_long_na <- gather(disease_index, key=DPI, 
+                     value=DI,
+                     X3:X11, ####Specify here the days the plants were observed (this means 3 to 11)
+                     na.rm=F)
+```
+
+  Which will generate a long table, containing missing observations coded as NA. The table structure is as follows:
+```{r structure of the table}
+str(di_long_na)
+````
+
+  Next, some modifications the table structure are neccessary to make sure that all variables (columns) are in the proper format.
+```{r table scrubbing}
+di_long_na$DI <- as.numeric(di_long_na$DI) ###Turns DI into numeric
+di_long <- na.omit(di_long_na) ###Generate a table that does not contain missing observations
+di_long$DPI <- na.omit( as.numeric (unlist( strsplit( as.character( di_long$DPI ), "X" ) ) ) )  ###Discard the "X" and save the number as a number (instead of a factor), it is not elegant, but it works
+```
+## Defining the contrasts
+  A crucial step that will influence all outputs of the statistical analysis is setting the "contrasts". Contrasts specifies the reference for each of the variables. "Treatment" contrasts specify that the first alphabetical level will be used as a reference for all others (see Strain below), while a "sum" constrast means that the reference value is the mean across all levels of that variable (the grand mean).
+```{r contrasts}
+####Specify what should be "appropriate" contrasts
+contrasts(di_long$Strain) <- "contr.treatment"###First alphabetical strain will be the baseline!
+contrasts(di_long$Batch) <- "contr.sum" ###Batches will be averaged to generate the baseline!
+```
+  
+## Add a censoring variable
+  Now that the data has been read into R, and formatted properly, a new variable is added to the data. This variable is called "Useful" and is a binary yes/no variable. The purpose of this variable is
+marking observations, that are re-observations of a subject that has previously reached disease index 4. As disease index of 4 means 100% wilting, the plant died when it reached this degree of wilting. Since death is permanent, continuing to observe this plant is unlikely to provide new information.
+To more accurately capture the linear phase of disease development, all observations where no symptoms are visible, except the one on the day before disease onset, will also be assigned to Useful = No
+```{r censor dead plants}
+###Interesting R-related observation, the below does not work when subsetting is done with filter(), 
+###because filter does not retain rownames!
+for (i in 1:max(di_long$subject)) { ###Go by subject
+  dummy1 <- di_long[di_long$subject==i,] ##Create a first dummy object, that is a subset of the full data containing the current subject 
+  if(min(dummy1$DI) == 0){
+  #remove those observations that are before disease onset, except the one directly before disease onset.
+  dummy1 <- dummy1[dummy1$DPI %in% (max(dummy1$DPI[dummy1$DI==0]):max(dummy1$DPI)),]
+  } 
+  if (max(dummy1$DI) == 4) { ###If this subject dies at some point
+    dummy2 <- dummy1[dummy1$DI==4,] ###Make a new dummy object, that only contains those recordings where DI=4
+    NEW <- di_long[di_long$subject==i & (di_long$DPI %in% min(dummy1$DPI):min(dummy2$DPI)),] ###Generate data subset "NEW", which contains those observations for a subject, that are between (including) the last recording where DI=0 and the first recording where disease index is 4.
+  } else { ###If this dubject does not die
+    NEW <- dummy1 ###New is the same as dummy1
+  }
+  di_long$Useful[rownames(di_long) %in% rownames(NEW)] <- c("Yes") ###All of those row(names) that are part of the "NEW" object are useful. Therefore these receive status "Yes" in column "Useful"
+}
+di_long$Useful[which(is.na(di_long$Useful))] <- c("No") ###Those that are not yes (and therefore are NA) become No
+rm(dummy1,dummy2)
+```
+  After this and the earlier code blocks have been run, the di_long data frame should look similar to this:
+```{r load broom, message=F}
+library("broom")
+```
+```{r inspect table}
+str(di_long)
+tidy(di_long) ###This can be used to assess the descriptive statistics of the data. It may be adivsable to look at SKEW and KURTOSIS of the DI (response) to determined wether this is approximately normally distributed (both close to 0, if they are above "absolute 1" the data is probably really not normal).
+```
+  With this, the data has been imported into R, and formatted according to the needs of *most* of the subsequent analysis.
+When actively trying out different analysis, it may be advisable to generate a backup copy of the table.
+```{r make backup table}
+di_long_full <- di_long 
+````
+Alternatively, this table can also be exported
+```{r table saving, eval = F}
+write.csv(di_long, file = "My_Formatted_Data.csv")
+```
+
+# Analysis of the area under the disease progression curve (AUDPC)
+
+Area under the disease progression curve (AUDPC) is a classical approach to analyze disease progression recordings.
+
+## Rationale and data preparation
+
+Here, the area under the curve is calculated, and the curve is drawn using disease index (y) and time (x).
+To get an overall impression per experiment, one can calculate the average disease index per day, within one experimental group, using:
+```{r load dplyr, message=F}
+library("dplyr")
+```
+```{r summarize}
+###Below i make use of some of the nice functionality provided by the tidyverse, most remarkably the pipe ( %>% ).
+di_summary <- di_long %>% group_by(Plant, Strain, Batch, DPI) %>% 
+  summarise(mean(DI),sd(DI),sd(DI)/sqrt(length(DI))) ##calculate within Batch mean, sd, and se for each Plant/Strain combination.
+##Averages within each replicate. This summary table is mainly helpful for plotting, not used for analysis...
+colnames(di_summary) <- c("Plant", "Strain", "Batch", "DPI", "mean", "sd", "se") ###Assign correct columnnames
+```
+Using these summaries, one can take a look at the averaged disease progression, using
+```{r load ggplot, message=F}
+library("tidyverse")
+library("stringr")
+```
+```{r plot disease area from summary}
+ggplot(filter(di_summary, Batch=="A")) + ###Use Only Batch A (too busy otherwise)
+  aes(x=DPI,y=mean,color=Strain) + ###Color by Strain, specify x and y.
+  geom_area(aes(fill=Strain),position="identity",alpha=0.15) + ###Area plot, colored by Strain
+  ##geom_errorbar(aes(x=DPI, ymax=mean+se, ymin=mean-se), size=0.25)+ ###This line adds SE. 
+  ##geom_errorbar(aes(x=DPI, ymax=mean+sd, ymin=mean-sd), size=0.25)+ ###This line adds SD. Don't use both.
+  facet_wrap(~Strain) + ###One plot per strain 
+  labs(x = "Days post infection", y = "Avg. Disease Index") + #Labels
+  ggtitle("Disease Areas,\nper strain, for batch A") #Title
+```  
+  
+  From this plot, one can see that in the example dataset the areas differ quite drastically between different strains. As can be seen here, all observations can be included in an AUDCP analysis, but one should take care that total observation times are similar, identical if possible. As the area increases with both, increased disease index and prolonged time, experiments of different length should not be compared using this approach.
+To calculated the actual AUDPC for each individual in the dataset a new data frame is created. As AUDCP is calculated from both disease index and DPI, this can not be stored in a reasonable way in the long data frame generated earlier.
+
+```{r load MESS, message=F}
+library("MESS")
+```
+```{r make auc_df}
+####Build a table of AUDCPs, per subject
+auc_df <- data.frame() ###Make auc_df data frame
+for (i in 1:max(di_long$subject)) { ##Go by subject
+  temp <- di_long[di_long$subject==i,] ###Subset full table into the subject table
+  temp <- droplevels(temp) ###Drop levels, so levels works properly below
+  auc_df[i,1] <- i ###Subject number
+  auc_df[i,2] <- levels(temp$Strain) ###Strain
+  auc_df[i,3] <- levels(temp$Plant) ###Plant
+  auc_df[i,4] <- levels(temp$Batch) ###Batch
+  auc_df[i,5] <- auc(temp$DPI,temp$DI) ###AUC; i assume that trapezoid rule is fine here. 
+  ### Additionally, auc calculation starts with the lowest x (DPI). I think this is sensible
+  ### I assume that if one specifies "from=0", the curve is expanded by a triangle that covers the range from 
+  ### 0 to whatever is the value at the first observation. I think the first observation should ideally be 0
+  ### if data was recorded from the beginning..
+}
+colnames(auc_df) <- c("subject","Strain","Plant","Batch","AUC") ###Name columns in AUC datafarame
+auc_df$Strain <- as.factor(auc_df$Strain) #refactor
+auc_df$Plant <- as.factor(auc_df$Plant) #refactor
+auc_df$Batch <- as.factor(auc_df$Batch) #refactor
+str(auc_df)
+```
+
+The auc data.frame contains one area under the curve per subject and all other subject specific variables as stored in the original table.
+
+## Analysis of differences in area under the disease progression curve
+
+An initial assessment of strain specific differences in AUDPC can be performed visually, for example by generating boxpots.
+```{r boxplot of auc}
+ggplot(auc_df) + geom_boxplot(
+  aes(x=Strain, y=AUC, color=Strain),  #Plot boxplots of AUCs, by strains
+  notch=F) +
+  labs(y="AUDPC") +
+  facet_wrap(~Batch) + ###Individual plots per batch (and plant if applicable)
+  ggtitle("Figure 2\nArea Under the Disease Progression Curve per strain across batches")
+```
+  
+  Next, one can use the area under the disease progression curve, to build a linear model, or a linear mixed effects model.
+  
+```{r load lm4 and lmerTest, message=F}
+library("lme4")
+library("lmerTest")
+```
+```{r analysis AUC}
+summary(lm(AUC~Batch,data=auc_df)) ###Can be used to identify batch effects. If there are none, including batch as a random factor below is not necessary (but also not necessarily wrong).
+
+auc_lmer <- lmer(
+  AUC ~ Strain + (1|Batch),   ### AUC modeled as a function of strain, random effects of batch 
+    data = auc_df  ) #Linear mixed effects model.
+
+auc_lm <- lm(AUC~Strain+Batch,data=auc_df) #Linear model.
+
+AIC(auc_lm,auc_lmer) #Lower AIC, better fit, linear model is slightly better.
+ggplot(data=auc_df, aes(y=AUC, x=Strain)) +geom_boxplot(aes(colour=Batch)) + ggtitle("Boxplot of AUDCP per strain by experimental batch")
+```
+  
+  The model can be explored using various functions, such as summary.
+  
+```{r summary auc lmer}
+summary(auc_lmer)  ### A model summary, containing information on the model.
+tidy(auc_lmer) ### A cleaner display using tidy.
+
+###The tidy output explained:
+
+#Term: A discription: (Intercept) overall intercept. Intercept depends on the contrasts set initially. Here treatment contrasts are used, so Intercept = First alphabetical strain (Strain1).
+
+#StrainStrain2: Difference in the estimate (slope), between Strain2 and the (Intercept)
+
+#Estimate: The estimated slope
+
+```
+  
+Model summaries contain information on the estimated slopes (Estimate) and standard errors, together with a t- and corresponding p-value in the output of the summary function. Note, that the above only contains information on differences between different levels and the reference, which is called (Intercept). The reference is contrast dependent.
+
+It may be quite relevant to know how individual strains compare to each other (and not just how each strain compares to Strain1). This can be analyzed using a generalized linear hypothesis test, while ajusting for multiple comparisons using Tukey's method.
+
+```{r load multcomp, message=F}
+library("multcomp")
+library("rcompanion")
+library("stringr")
+```
+```{r glht auc}
+tidy(summary(glht(auc_lmer, linfct=mcp(Strain="Tukey"))))
+```
+  
+ This information can, for example, be integrated into a boxplot of the individual disease areas. For example, using a compact letter display, in conbination with AUDPC, combines statistical and visual information.
+First, however, the grouping letters need to be calculated. Then, these letters are added to the boxplot generated earlier.
+```{r AUC model CLD plot}
+auc_cld <- cld(glht(auc_lmer, linfct=mcp(Strain="Tukey"))) ###Save letters
+auc_cld <- cbind(levels(auc_df$Strain),auc_cld$mcletters$Letters) ###bind letters to columns
+colnames(auc_cld) <- c("Strain","Letter") ###Name columns
+auc_cld <- as.data.frame(auc_cld) #Coerce to dataframe
+###Integrate letters into auc_df##
+auc_df <- left_join(auc_df,auc_cld,by="Strain",copy=T) ###Add letter information
+###Some extra scripting to make the mean and CI plot.
+auc_CI <- as.data.frame(tidy(confint(auc_lmer)))
+auc_CI <- auc_CI[3:nrow(auc_CI),] ##Drop sig01, sigma
+auc_CI$Strain <- levels(auc_df$Strain)
+###Mean relative to Strain1 (except strain1 that one is absolute)
+
+for (i in 1:nrow(auc_CI)){
+  if (i==1){
+    auc_CI$mean[i] <- mean(c(auc_CI$X2.5..[i],auc_CI$X97.5..[i]))
+    auc_CI$upr[i] <- auc_CI$X97.5..[i]
+    auc_CI$lwr[i] <- auc_CI$X2.5..[i]
+  } else {
+    auc_CI$mean[i] <- c(auc_CI$mean[1]+mean(c(auc_CI$X2.5..[i],auc_CI$X97.5..[i])))
+    auc_CI$upr[i] <- c(auc_CI$mean[1]+auc_CI$X97.5..[i])
+    auc_CI$lwr[i] <- c(auc_CI$mean[1]+auc_CI$X2.5..[i])
+  }
+}
+ 
+####Generate plot of meanCI of AUDCP with significance letters and raw data as jittered points
+  ggplot(aes(x=Strain, y=AUC, color=Strain),data=auc_df) + ###Plot the auc_df
+  geom_crossbar(data = auc_CI, aes(x = Strain, y = mean, ymin = lwr, ymax = upr,fill=Strain), alpha=0.3) +
+  geom_jitter(aes(shape=Batch)) + ###with jitter overplotted, symbol shape defined by batch
+  geom_text(aes(x=Strain, y=-3, label=Letter),color="black", data=auc_cld) + ###Get the letters from auc_cld 
+  #and write those to position y=-3
+  labs(y="AUDPC") + #Y-Axis label
+  ggtitle("AUDPC raw values and mean from the LMM\nwith 95% CI per strain and grouping letters") #Title 
+
+```
+  
+  Finally, one can plot the pairwise difference in AUDPC means with confidence intervals for the linear model and the linear mixed effects model.
+```{r pairwise confint AUDPC} 
+pairwise_confint_AUDPC_lm <- as.data.frame(confint(glht(auc_lm, mcp(Strain = "Tukey")))$confint)
+pairwise_confint_AUDPC_lm$Comparison <- rownames(pairwise_confint_AUDPC_lm)
+
+pairwise_confint_AUDPC_lmer <- as.data.frame(confint(glht(auc_lmer, mcp(Strain = "Tukey")))$confint)
+pairwise_confint_AUDPC_lmer$Comparison <- rownames(pairwise_confint_AUDPC_lmer)
+
+###Plot the comparisons, below may not be the most straight-foward way to plot this the way I want it, but it works.
+ggplot(pairwise_confint_AUDPC_lm, aes(x = Comparison, y = Estimate, ymin = lwr, ymax = upr, color = Comparison)) + ###Plot Comparison on x, estimate on y
+  scale_x_discrete(limits = rev(levels(as.factor(pairwise_confint_AUDPC_lm$Comparison)))) + ###Rescale x, so the order is inverted 
+  geom_errorbar() + geom_point() + ###Draw data
+  coord_flip() +  theme(legend.position="none") + xlab("") +###Invert X and Y, hide legend
+  ggtitle("Difference in means of the AUDPC \nin the linear model with 95% confidence interval") ##Add a title
+
+####Plot of the comparisons in the LMM. Here the bars are colored by their absolute value, instead of by their name.
+ggplot(pairwise_confint_AUDPC_lmer, aes(x = Comparison, y = Estimate, ymin = lwr, ymax = upr, color = abs(Estimate))) + ###Plot Comparison on x, estimate on y
+  scale_x_discrete(limits = rev(levels(as.factor(pairwise_confint_AUDPC_lmer$Comparison)))) + ###Rescale x, so the order is inverted 
+  geom_errorbar() + geom_point() + ###Draw data
+  coord_flip() +  theme(legend.position="none") + xlab("") +###Invert X and Y, hide legend
+  ggtitle("Difference in means of the AUDPC \nin the LMM with 95% confidence interval") ##Add a title
+```
+  
+  Estimates of lm and lmm are very similar. As a rule of thumb, comparisons where "0" is not part of the 95% confidence interval are likely to produce a signficant p-value (assuming significance is denoted by p<0.05).
+  
+# Analysis of Disease development
+
+## Using a Repeated Measure ANOVA
+Repeated-measure ANOVA can be used to analyze DI and time. However, when using repeated measure ANOVA one should be aware that the arrow of time is not considered in this analysis. Here the variable denoting the measurements is put into the Error() term.
+*This section is one of the few parts that require user input to define the split list*.
+```{r RM anova}
+#Linear model of rep measure is as follows
+contrasts(di_long$Strain) <- "contr.sum"
+rm_aov <- aov(DI~Strain + Error(DPI), data = di_long)
+###The below Provides differences to Strain1. 
+summary(rm_aov, split=list(Strain = list(Strain2=1,Strain3=2,Strain4=3,Strain5=4,Strain6=5,Strain7=6)))
+###I personally think that LMMs are nicer to investigate and offer greater flexibility.
+```
+
+## Linear mixed effects model
+
+### Rationale
+In this section, the data is analyzed using a linear mixed effect model. While such models have been used already in the previous section, to test for a strain specific influence on the area under the disease progression curve, different data is used to build the model in this section.
+As mentioned, AUDPC summarizes disease incidence and time into a single variable, the area.
+However, in certain cases the AUDCP could be very similar, while the actual disease progression is different.
+Taking a look at Figure 1, we see that Strain2 and Strain3 display different disease progressions. For Strain 2, the Disease Index continually rises over time. For Strain3, the the disease appears to set on very quickly, in fact before the observations started, but from there it does not increase in severity.
+However, if we compare the impact of those two strains on the AUDCP (Fig2, 3), it becomes evident, that the AUDPCs for these strains are not statistically different, both strains belong to group "a". 
+Other methods may be more sensitive to such differences. Below a different approach using linear mixed effect models is taken.
+
+###Model
+The main difference between this analysis and the one based on the AUDPC is the response variable. In the AUDPC analysis the area was the response variable. Here in this section, the response variable is the Disease Index, and time is included as predictor (covariate) in the model.
+A linear mixed effects model is generated. Here, the DI is modeled on the fixed effects "Strain" and an interaction of Strain and Time. Batch is included as a random effect, meaning it is not of direct interest, but assumed to introduce variation, specifically by affecting the intercept.
+```{r lmer DI constrasts and model}
+###Define contrasts for lmer
+contrasts(di_long$Strain) <- "contr.treatment"###First alphabetical strain will be the baseline!
+#contrasts(di_long$Plant) <- "contr.treatment"###First alphabetical plant will be the baseline!
+contrasts(di_long$Batch) <- "contr.sum" ###Batches will be averaged
+###Drop things that are not "Useful"
+di_long_useful <- filter(di_long, Useful=="Yes")
+str(di_long_useful)
+## Build linear mixed effect model(s) ####
+## only Strain as fixed effect (a simple model),
+## Batch and subject are assumed to have random effects.
+## Strain and time are assumed to interact, meaning that for each day, the strain specific slope is estimated.
+## See page 6 (Table2) of the lme4 vignette on how to construct error terms
+## This model is supposed to capture disease development, so it will work with the data previously deemed "useful"
+
+disease_lmer <- lmer(DI~Strain+Strain:DPI +(1|Batch)+(1|subject),data=di_long_useful)
+```
+  
+ The model can be investigated using summary functions. The pairwise comparisons can be plotted with 95%CI to assess how different two strains are.
+```{r pairwise confint plot of disease lmer}
+###Check model summary
+summary(disease_lmer)
+###E.g. plot confints
+###Make pairwise confints and plot them, with a flipped coordinate system
+pairwise_confint <- as.data.frame(confint(glht(disease_lmer, mcp(Strain = "Tukey", interaction_average=T)))$confint)
+pairwise_confint$Comparison <- rownames(pairwise_confint)
+
+ggplot(pairwise_confint, aes(x = Comparison, y = Estimate, ymin = lwr, ymax = upr, color = abs(Estimate))) + ###Plot Comparison on x, estimate on y
+  scale_x_discrete(limits = rev(levels(as.factor(pairwise_confint$Comparison)))) + ###Rescale x, so the order is inverted 
+  geom_errorbar() + geom_point() + ###Draw data
+  coord_flip() +  theme(legend.position="none") + xlab("") + ###Invert X and Y, hide legend
+  ggtitle("Difference in means with 95% confidence interval \ncolored by absolute estimated difference") ##Add a title
+
+confint_model <- as.data.frame(tidy(confint(disease_lmer)))
+
+confint_slopes <- confint_model[ (1 + 3 + nlevels( di_long$Strain ) ) : ( 3 + 2*nlevels( di_long$Strain ) ) , 2:3 ]
+
+colnames(confint_slopes) <- c("lwr","upr")
+confint_slopes$Estimate <- rowMeans(confint_slopes)
+confint_slopes$Strain <- levels(di_long$Strain)
+
+###Plot the estimates, below may not be the most straight-foward way to plot this the way I want it, but it works.
+ggplot(confint_slopes, aes(x = Strain, y = Estimate, ymin = lwr, ymax = upr, color = abs(Estimate))) + ###Plot Comparison on x, estimate on y
+  scale_x_discrete(limits = rev(levels(as.factor(confint_slopes$Strain)))) + ###Rescale x, so the order is inverted 
+  geom_errorbar() + geom_point() + ###Draw data
+  coord_flip() +  theme(legend.position="none") + xlab("") +###Invert X and Y, hide legend
+  ggtitle("Absolute slopes with 95%CI") ##Add a title
+
+#Intercepts are treatment contrasted
+confint_icep <- confint_model[4:( 3 + nlevels( di_long$Strain )),]
+
+confint_icep$Strain <- levels(di_long$Strain)
+
+for (i in 1:nrow(confint_icep)){
+  if (i==1){
+    confint_icep$Estimate[i] <- mean(c(confint_icep$X2.5..[i],confint_icep$X97.5..[i]))
+    confint_icep$upr[i] <- confint_icep$X97.5..[i]
+    confint_icep$lwr[i] <- confint_icep$X2.5..[i]
+  } else {
+    confint_icep$Estimate[i] <- c(confint_icep$Estimate[1]+mean(c(confint_icep$X2.5..[i],confint_icep$X97.5..[i])))
+    confint_icep$upr[i] <- c(confint_icep$Estimate[1]+confint_icep$X97.5..[i])
+    confint_icep$lwr[i] <- c(confint_icep$Estimate[1]+confint_icep$X2.5..[i])
+  }
+}
+
+ggplot(confint_icep, aes(x = Strain, y = Estimate, ymin = lwr, ymax = upr, color = abs(Estimate))) + ###Plot Comparison on x, estimate on y
+  scale_x_discrete(limits = rev(levels(as.factor(confint_icep$Strain)))) + ###Rescale x, so the order is inverted 
+  geom_errorbar() + geom_point() + ###Draw data
+  coord_flip() +  theme(legend.position="none") + xlab("") +###Invert X and Y, hide legend
+  ggtitle("Absolute intercept with 95%CI") ##Add a title
+```
+
+
+ Essentially, all of the tools used to analyze the linear model for area under the disease progression curve, can be applied to the disease model:
+
+```{r glht and cld of lmer}
+###Test hypothesis that all strains are equal and do compact letter grouping
+#Using multcomp glht
+summary(glht(disease_lmer, linfct=mcp(Strain="Tukey",interaction_average = T)))
+cld(glht(disease_lmer, linfct=mcp(Strain="Tukey", interaction_average=T)))
+
+#Using lmerTest lsMeans
+lmerlsm <- difflsmeans(disease_lmer)$diffs.lsmeans.table
+lmerlsm
+Comparison = str_split_fixed(rownames(lmerlsm),"Strain ",2)[,2]
+
+### Produce compact letter display
+
+library(rcompanion)
+
+cldList(comparison = Comparison,
+        p.value    = p.adjust(lmerlsm$'p-value',
+                       method =  "bonferroni")   ,
+        threshold = 0.05)
+```
+  
+  Using the linear model and raw data, different displays can be plotted, for example, a boxplot of the  "Useful" data-points combined with the predictions (extrapolations) of the linear model.
+```{r echo=F}
+library("modelr")
+```
+```{r predict full dataset and plot}
+##Add predictions to full dataset
+di_long <- add_predictions(di_long,disease_lmer,var="lmer.pred")
+ggplot(data=di_long, aes(x=DPI,y=DI))+
+  geom_boxplot(aes(color=Strain,group=DPI),data=filter(di_long, Useful=="Yes"))+
+  geom_smooth(aes(y=lmer.pred,color=Strain), method="lm", alpha=0.6) +
+  facet_wrap(~Strain)+
+  ggtitle("Boxplots and linear fit for individual strains")
+```
+  Finally, of the methods discussed here, those relying on a linear model of raw observations over time, can be used for other kinds of observations, e.g. bacterial titers. 
+  
+  At least briefly, plot residuals of the lmm to assess if this appears normal (random)
+  
+```{r residuals}
+di_long$resid[di_long$Useful=="Yes"] <- resid(disease_lmer)
+ggplot(di_long[di_long$Useful=="Yes",], aes(x=DPI,y=resid)) + geom_jitter(aes(color=Strain)) 
+```
+
+# Survival Analysis
+
+## Background
+Survival analysis is different in several aspects from the earlier approaches. Survival analysis, also known that time-to-event analysis, builds on a different dataset, which can  be generated from raw disease indices. Survival analysis provides a way to analyze the time-to-event recordings within one population. In the case of the data used here, what is of interest is an event that can be referred to as *death*. Correctly defining *death* in this context is crucial for the outcome of the analysis.
+*Death*, here, is defined as a subject reaching a certain disease index, from which it cannot recover. In this script the disease index that defines the threashold to *death* is called "cutoff".
+```{r set cutoff}
+###Set the cutoff by assigning a number to the variable cutoff
+cutoff <- c(2.5) 
+```
+All of the observations that are above the dotted line in the plot below are *dead*, at the day they cross that line. Those that never cross the line are alive until the end of observations, and are "right censored", meaning that their event was not observed during the time this subject was observed.
+```{r plot recorded data and cutoff}
+ggplot(data=di_long) +
+                  geom_jitter(aes(x=DPI, y=DI,color=Strain,shape=Batch)) +
+                  geom_segment(aes(x=0, xend=max(DPI)+0.5,y=cutoff, yend=cutoff), linetype="dotted") +
+                  labs(x = "Days post infection", y = "Disease indices", title="Scatterplot of disease indices\n cutoff plotted as dotted line") +
+                  coord_cartesian(xlim=c(-0.1,10))
+```
+  
+## Generation of a survival table
+  A "survival table" can be generated using the following code. This code works on the long table, generated in the beginning, and the cutoff variable defined above. 
+```{r disable warnings, echo=F}
+oldw <- getOption("warn")
+options(warn = -1)
+```
+
+```{r make survival table, message = F}
+###Generate survival table
+surv_from_DI <- data.frame(Subject=disease_index$subject,
+                         Strain=disease_index$Strain,
+                         Plant=disease_index$Plant,
+                         Batch=disease_index$Batch)
+###Fill survival table based on the di_long table. This generates warnings. These can be ignored and come from the min()
+for (i in 1:max(di_long$subject)) { #Go by subject
+  dummy <- di_long[di_long$subject==i,] #generate dummy for the subject
+  if (is.infinite(min(dummy$DPI[which(dummy$DI >= cutoff)]))) { #If none of the DI is greater than the cutoff (this is where warnings are generated, min on an empty object returns infinite and a warning!)
+    surv_from_DI$End[i] <- max(dummy$DPI) #Generate a  observation, censoring at the maximum DPI recorded
+    surv_from_DI$Death[i] <- 0 #Still alive, because it did not pass the cutoff
+  } else { #If more than zero DI are greater than the cutoff
+    surv_from_DI$End[i] <- min(dummy$DPI[which(dummy$DI >= cutoff)]) #Use the lowest DPI where condition is met
+    surv_from_DI$Death[i] <- 1 #record as dead
+  }
+}
+rm(dummy)
+```
+```{r toggle warnings, echo=F}
+options(warn = oldw)
+```
+
+## Kaplan-Meier estimates of survival
+
+Kaplan-Meier estimates of survival are the basic tool of survival analysis. These can be estimated using the survfit function from the "survival" package.c
+
+
+```{r load survival, message=F}
+library("survival")
+```
+```{r survfit}
+surv_DI_fit <- survfit(Surv(End, Death) ~Strain +strata(Batch), data=surv_from_DI)
+````
+
+The survminer package provides the ggsurvplot() function. This works nicely on datasets with few treatments. However, for the data presented here, I think it is easier to initially generate a data frame that contains the fit and plot with "normal" ggplot2
+
+```{r generate KM dataframe}
+library("stringr")
+###Strata dummy generation, modified from kmiddleton / rexamples 
+strata_dummy <-NULL
+for(i in 1:length(surv_DI_fit$strata)){
+      # add vector for one strata according to number of rows of strata
+      strata_dummy <- c(strata_dummy, rep(names(surv_DI_fit$strata)[i], surv_DI_fit$strata[i]))
+}
+###Data frame generation inspired by a post by Hadley Wickham to the ggplot2 Googlegroup
+surv_DI_fit.df <- data.frame( 
+  time = surv_DI_fit$time, 
+  n.risk = surv_DI_fit$n.risk, 
+  n.event = surv_DI_fit$n.event, 
+  surv = surv_DI_fit$surv, 
+  strata = strata_dummy, 
+  upper = surv_DI_fit$upper, 
+  lower = surv_DI_fit$lower 
+) 
+zeros <- data.frame(time = 0, surv = 1, strata = names((surv_DI_fit$strata)), 
+  upper = 1, lower = 1)
+
+surv_DI_fit.df <- plyr::rbind.fill(zeros, surv_DI_fit.df) ###I dont want to load plyr because i guess it will interfere with dplyr...
+rm(strata_dummy)
+rm(zeros)
+
+##The Batch and Strain columns are regenerated from the strata field, there are probably more elegant ways to do this
+
+surv_DI_fit.df$Batch <- as.factor( str_split_fixed(
+  matrix( nrow=length(surv_DI_fit.df$strata),ncol=2, unlist(strsplit(as.character(surv_DI_fit.df$strata),", ")), byrow=T )[,2],"=",2)[,2])
+surv_DI_fit.df$Strain <- as.factor( str_split_fixed(
+    matrix( nrow=length(surv_DI_fit.df$strata),ncol=2, unlist(strsplit(as.character(surv_DI_fit.df$strata),", ")), byrow=T )[,1],"=",2)[,2])
+
+###End of data frame generation
+###Start plotting
+ggplot(surv_DI_fit.df, aes(time, surv, colour = Strain)) + 
+  geom_step(aes(y = surv*100,linetype=Batch)) +
+  facet_wrap(~Strain) +
+  ggtitle("Survival estimates for all Batches")
+```
+
+## Cox-Proportional hazards and hazard ratios
+
+Different approaches to survival analysis, are based on analysing the hazards. The hazard is the probability of experiencing an event at a given timepoint. Many hazard based analysis assume that hazards are proportional between treatments, meaning that they differ by a fixed factor.
+Hazards were strongly influenced by Cox and a basic model is the cox proportional hazards model.
+
+```{r coxph and PH assumption}
+###Cox-Proportional hazards####
+#Build model
+srv_coxph <- coxph(Surv(End, Death) ~Strain + strata(Batch), data=surv_from_DI) 
+###Check porportionality of hazards
+cox.zph(srv_coxph, transform = "log")
+
+````
+ If the proportionality of hazards is violated within the dataset can be seen from the p-value(s) returned by cox.zph. 
+ One can then continue with a comparison of hazard ratios, however hazard ratios are not appropriate if the assumption of proportional hazards is violated.
+```{r load survcomp and rms, message=F}
+library("survcomp")
+library("rms")
+```
+````{r}
+####Hazard ratio
+haz_rats <- hazard.ratio(x= surv_from_DI$Strain, 
+                         surv.time = surv_from_DI$End, 
+                         surv.event = surv_from_DI$Death, 
+                         strat = surv_from_DI$Batch, 
+                         method.test = "wald" ) ###Overall hazard ratios
+
+###Pairwise hazard ratios / modified from the pairwise chisq calculation
+pw_hazrats <- matrix(0., nlevels(surv_from_DI$Strain),nlevels(surv_from_DI$Strain))
+for (i in 1:nlevels(surv_from_DI$Strain)) {
+  for (j in (1:nlevels(surv_from_DI$Strain))[-i]) {
+    datasubset <- droplevels(subset( surv_from_DI,
+      surv_from_DI$Strain %in% (unique(surv_from_DI$Strain))[c(i,j)]))
+    temp <- hazard.ratio(
+      x= datasubset$Strain, 
+      surv.time = datasubset$End, 
+      surv.event = datasubset$Death, 
+      strat = datasubset$Batch, 
+      method.test = "likelihood.ratio" ###Define test to determine p.
+      )
+    pw_hazrats[i,j] <- temp$p.value
+    }
+}
+colnames(pw_hazrats) <- levels(surv_from_DI$Strain)
+rownames(pw_hazrats) <- levels(surv_from_DI$Strain)
+```
+```{r results = "asis"}
+stargazer::stargazer(pw_hazrats,type="html",title="Pairwise hazard ratio pvalues")
+```
+  
+  If the hazards are found to be non-proportional, as is observed here, it might be a good idea to perform survival regression analysis, or pairwise log-rank testing (see below) instead of hazard ratio tests. Alternatives may also come from the use of Cox mixed-effects model, similar to linear mixed-effects model, but with a different type of response variable.
+  
+  
+```{r coxme}
+library("coxme")
+cme <-  coxme(Surv(End, Death) ~Strain + (1|Batch), data=surv_from_DI)
+anova(cme)
+summary(glht(cme,linfct=mcp(Strain="Tukey")))
+````
+
+## Analysis of survival curves and fits
+Comparing the Kaplan-Meier survival estimates can be done in different ways. Here i will use non-parametric log-rank testing and parametric survival regression.
+
+### Logrank testing
+The below produces all pairwise comparisons of the Kaplan Meier estimate of survival using a logrank test.
+```{r pairwise logranks}
+###Make a table of pairwise chisq pvalues, for the logrank test.
+#Based on a post to the R Mailing list by T. Therneau
+pw_logrank_test_type <- 0 ###0 for logrank, 1 for peto and peto
+pw_logrank <- matrix(0., nlevels(surv_from_DI$Strain),nlevels(surv_from_DI$Strain))
+for (i in 1:nlevels(surv_from_DI$Strain)) {
+  for (j in (1:nlevels(surv_from_DI$Strain))[-i]) {
+    datasubset <- droplevels(subset( surv_from_DI,
+      surv_from_DI$Strain %in% (unique(surv_from_DI$Strain))[c(i,j)]))
+    temp <- survdiff(Surv(End, Death)~Strain+strata(Batch), data=datasubset, rho=pw_logrank_test_type)
+      
+    pw_logrank[i,j] <- pchisq(temp$chisq, df=1, lower=F) ##df will always be 1 because this is pairwise
+    }
+}
+colnames(pw_logrank) <- levels(surv_from_DI$Strain)
+rownames(pw_logrank) <- levels(surv_from_DI$Strain)
+#Make dummy adjustment table
+pw_logrank_adjBon <- pw_logrank
+#Fill adjusted pvalue table.
+for (i in 1:ncol(pw_logrank)) {
+  pw_logrank_adjBon[,i] <- cbind(p.adjust(pw_logrank[,i], method="bonferroni"))
+}
+```
+````{R results="asis"}
+stargazer::stargazer(pw_logrank_adjBon,type="html",title="Pairwise Chisq p-values (Bonferroni adjusted)")
+```
+
+
+### Regressions
+  Generally a survival regression does not assume proportionality of hazards. A survival regression is fit to a distribution, defined by dist="".
+  
+```{r survival regression}
+####Survival Regression###
+###This is done using functions from rms.
+###psm is a survival::survreg wrapper. but the output is more handle-able for some other functions.
+ddist <- datadist(surv_from_DI)
+options(datadist="ddist")
+psurv_gaus <- psm(Surv(End, Death) ~Strain, data=surv_from_DI, dist="gaussian")
+psurv_logistic <- psm(Surv(End, Death) ~Strain, data=surv_from_DI, dist="logistic")
+psurv_lnorm <- psm(Surv(End, Death) ~Strain, data=surv_from_DI, dist="lognormal")
+psurv_wei <- psm(Surv(End, Death) ~Strain, data=surv_from_DI, dist="weibull")
+
+###Same with survreg()
+s_reg_gaus <- survreg(Surv(End, Death) ~Strain, data=surv_from_DI, dist="gaussian")
+s_reg_logistic <- survreg(Surv(End, Death) ~Strain, data=surv_from_DI, dist="logistic")
+s_reg_lnorm <- survreg(Surv(End, Death) ~Strain, data=surv_from_DI, dist="lognormal")
+s_reg_wei <- survreg(Surv(End, Death) ~Strain, data=surv_from_DI, dist="weibull")  
+
+aic.scores.psurv <- rbind(
+  extractAIC(psurv_wei),
+  extractAIC(psurv_gaus),
+  extractAIC(psurv_logistic),
+  extractAIC(psurv_lnorm))
+###Make useable AIC table
+rownames(aic.scores.psurv) <- c("Weibull", "Gaussian", "Logist", "Lognorm")
+colnames(aic.scores.psurv) <- c("df", "AIC")
+###Call table
+````
+````{R results="asis"}
+stargazer::stargazer(aic.scores.psurv,type="html",title="AIC Scores")
+```
+
+From the table above, the model with the lowest AIC score can be chosen. For this analysis, this is the lognormal model, but this does not have to apply to other experiments.
+Then, one can inspect that model for significant differences.
+
+```{r glht lnorm}
+summary(glht(psurv_lnorm,linfct=mcp(Strain="Tukey")))
+```
+
+Again, one can then inspect the different effects, for example using pairwise comparisons of means.
+
+```{r}
+pairwise_confint_sreg <- as.data.frame(confint(glht(psurv_lnorm, mcp(Strain = "Tukey")))$confint)
+pairwise_confint_sreg$Comparison <- rownames(pairwise_confint_sreg)
+###Plot the comparisons, below may not be the most straight-foward way to plot this the way I want it, but it works.
+ggplot(pairwise_confint_sreg, aes(x = Comparison, y = Estimate, ymin = lwr, ymax = upr, color = Comparison)) + ###Plot Comparison on x, estimate on y
+  scale_x_discrete(limits = rev(levels(as.factor(pairwise_confint$Comparison)))) + ###Rescale x, so the order is inverted 
+  geom_errorbar() + geom_point() + ###Draw data
+  coord_flip() +  theme(legend.position="none") + xlab("") +###Invert X and Y, hide legend
+  ggtitle("Difference in means with 95% Confidence interval") ##Add a title
+```
+
+### Plotting of parametric survival regression
+
+It is possible, but not really easy, to plot the curves generated using parametric survival regression. These curves are the result of fitting the data to a distribution in the earlier section. 
+Doing this in a manner that is compatible with ggplot2 requires a nice dataframe. Below is code to generate plots of the KM estimates per batch and the generated fit. This is performed for the four distributions above, and can be adapted to different distributions if necessary.
+
+```{r generate curves of survreg}
+
+###Step 1, extract the coefficients. These are relative to Strain1 because Strain is treatment contrasted.
+
+for (i in 1:nlevels(surv_DI_fit.df$Strain)) { #For loop through strains
+  if(i==1) { #Strain1 is relative to itself, so no change
+  coef_wei <- list()
+  coef_logistic <- list()
+  coef_gaus <- list()
+  coef_lnorm <- list()
+  coef_wei[i] <- coef(s_reg_wei)[i]
+  coef_logistic[i] <- coef(s_reg_logistic)[i]
+  coef_gaus[i] <- coef(s_reg_gaus)[i]
+  coef_lnorm[i] <- coef(s_reg_lnorm)[i]
+  } else { ###Other strains are relative to 1
+  coef_wei[i] <- coef(s_reg_wei)[1] + coef(s_reg_wei)[i]
+  coef_logistic[i] <- coef(s_reg_logistic)[1] + coef(s_reg_logistic)[i]
+  coef_gaus[i] <- coef(s_reg_gaus)[1] + coef(s_reg_gaus)[i]
+  coef_lnorm[i] <- coef(s_reg_lnorm)[1] + coef(s_reg_lnorm)[i]
+  }
+}
+##Step 2
+####Store the coefficients and the scale in a new data frame, of parameters
+### Keep in mind that survreg.distributions$weibull is different from rweibull, hence the difference in names.
+sregparams <- data.frame(
+  Strain = rep(levels(surv_from_DI$Strain),4 ), #Fill with strains
+  scale.wei = exp(unlist(coef_wei)), #weibull fit scale parameters
+  scale.logistic = rep(s_reg_logistic$scale, nlevels(surv_from_DI$Strain)), #fill with logis scales
+  scale.gaus = rep(s_reg_gaus$scale, nlevels(surv_from_DI$Strain)), #fill with gaus scales
+  scale.lnorm = rep(s_reg_lnorm$scale, nlevels(surv_from_DI$Strain)), #fill with lnorm scale
+  shape.wei =  rep(1/s_reg_wei$scale, nlevels(surv_from_DI$Strain)), #shape for weibull
+  shape.logistic = unlist(coef_logistic), #shape for logistic
+  shape.gaus =  unlist(coef_gaus), #shape for gaus
+  shape.lnorm =   unlist(coef_lnorm) #shape for lnorm
+  )
+##Step 3
+###Calculate the "daily" value of each curve
+for (i in 1:nlevels(surv_DI_fit.df$Strain)){
+  if(i==1) {
+    wei <- list()
+    logis <- list()
+    gaus <- list()
+    lnorm <- list()
+  }
+  x <- levels(surv_DI_fit.df$Strain)[i]
+  n <- c(1:max(surv_from_DI$End))
+  data <- filter(sregparams, Strain==x)
+  time <- n
+  wei <- cbind(wei, pweibull(
+    q=n,
+    scale=data$scale.wei,
+    shape=data$shape.wei,
+    lower.tail=FALSE))
+  logis <- cbind(logis,plogis(
+    q=n,
+    scale=data$scale.logistic,
+    location=data$shape.logistic,
+    lower.tail=FALSE  ))
+  gaus <- cbind(gaus,pnorm(
+   q=n,
+   sd=data$scale.gaus,
+   mean=data$shape.gaus,
+   lower.tail = F))
+  lnorm <- cbind(lnorm, plnorm(
+    q=n,
+    sd=data$scale.lnorm,
+    mean=data$shape.lnorm,
+    lower.tail=F))
+}
+
+##Step 4
+###Put all the curves into a data.frame that contains information on "time" and also "Strain", for compatibility with other data.frames
+sreg_curves <- data.frame(
+  wei.sreg = cbind(unlist(wei)),
+  logis.sreg = cbind(unlist(logis)),
+  gaus.sreg = cbind(unlist(gaus)),
+  lnorm.sreg = cbind(unlist(lnorm)),
+  Strain = rep(unlist(levels(surv_DI_fit.df$Strain)),each=max(surv_from_DI$End)),
+  time = rep(c(1:max(surv_from_DI$End)), nlevels(surv_DI_fit.df$Strain))
+)
+##Step 5
+###Turn that data.frame into a long data.frame (not used here but could be handy.)
+sreg_long <- sreg_curves %>% gather(., key="Distribution",values = c(lnorm.sreg, wei.sreg,gaus.sreg,logis.sreg) )
+sreg_long$Distribution <- as.factor(sreg_long$Distribution)
+##Levels: gaus.sreg lnorm.sreg logis.sreg wei.sreg
+levels(sreg_long$Distribution) <- c("Gaussian","Lognormal","Loglogistic","Weibull")
+```
+Now, these can be plotted and inspected visually..
+```{r plot KM and curve}
+###Plot of KM+Weibull
+  ggplot(surv_DI_fit.df, aes(time, surv, colour = Strain)) +
+  geom_step(aes(linetype=Batch)) +
+  geom_line(data=sreg_curves,aes(y=wei.sreg),color="black") +
+  facet_wrap(~Strain) + 
+  ggtitle("Kaplan-Meier estimates and fit to\nWeibull distribution")
+###Plot of KM+Logistic
+  ggplot(surv_DI_fit.df, aes(time, surv, colour = Strain)) +
+    geom_step(aes(linetype=Batch)) +
+    geom_line(data=sreg_curves,aes(y=logis.sreg),color="black") +
+    facet_wrap(~Strain) + 
+    ggtitle("Kaplan-Meier estimates and fit to\n Logistic distribution")
+###Plot of KM+Gaussian  
+  ggplot(surv_DI_fit.df, aes(time, surv, colour = Strain)) +
+    geom_step(aes(linetype=Batch)) +
+    geom_line(data=sreg_curves,aes(y=gaus.sreg),color="black") +
+    facet_wrap(~Strain) + 
+    ggtitle("Kaplan-Meier estimates and fit to\nGaussian distribution")
+###Plot of KM+Lognormal  
+  ggplot(surv_DI_fit.df, aes(time, surv, colour = Strain)) +
+    geom_step(aes(linetype=Batch)) +
+    geom_line(data=sreg_curves,aes(y=lnorm.sreg),color="black") +
+    facet_wrap(~Strain) + 
+    ggtitle("Kaplan-Meier estimates and fit to\nLognormal distribution")
+```
+
+
+# Comparison of analyis method results.
+
+An inherent question when analyzing data, is which analysis produced which result and why. 
+Below, the outputs from the three major analysis performed are printed, so they can be compared.
+
+```{r summaries}
+summary(auc_lmer)
+summary(disease_lmer)
+summary(psurv_lnorm)
+```
+
+An easier comparisons might be accomplished with the compact letter display.
+
+```{r clds}
+cld(glht(auc_lmer, linfct=mcp(Strain="Tukey")))
+
+#Compact letters for lmerTest objects are a little tricky. This solution comes from the rcompanion. Mangiafico, S.S. 2015. An R Companion for the Handbook of Biological Statistics, version 1.3.0. 
+### Extract lsmeans table
+
+
+
+cldList(comparison = Comparison,
+        p.value    = p.adjust(lmerlsm$'p-value',
+                       method =  "bonferroni")   ,
+        threshold = 0.05)
+
+
+cld(glht(srv_coxph,linfct=mcp(Strain="Tukey")))
+cld(glht(psurv_lnorm,linfct=mcp(Strain="Tukey")))
+cld(glht(cme,linfct=mcp(Strain="Tukey")))
+```
+
+#Session Info
+
+```{r session info}
+sessionInfo()
+```
+
+
+#Appendix; Manuscript figures
+The below was used to generate figures for the main text.
+```{r eval=F}
+####This script is used to generate  figures for the Manuscript####
+#It requires that everything from the rmd file is available through the environment,
+#in practical terms, that the markdown script was run through the R console.
+
+#### Fig1 ####
+##generate a visual display of 
+#a) raw data.
+#b) AUDPC 
+#c) Linear fit and 
+#d) survival curve
+
+library("grid")
+
+Fig1a <- ggplot(data=di_long) +
+                  geom_jitter(aes(x=DPI, y=DI, color=Strain, shape=Batch)) +
+                  #geom_segment(aes(x=0, xend=max(DPI)+0.5,y=cutoff, yend=cutoff), linetype="dotted") +
+                  labs(x = "Days post infection", y = "Disease Index", title="a) Scatterplot of all disease indices") +
+                  coord_cartesian(xlim=c(2,11))+
+  theme_bw()
+                  
+Fig1b <-   ggplot(data=filter(di_summary, Batch=="B-I")) +
+                  aes(x=DPI,y=mean, color=Strain,fill=Strain) +
+                  geom_area(alpha=0.10, position="identity") +
+                  labs(x = "Days post infection", y = "Avg. Disease Index", title="b) Area under the disease progression curve (Batch B-I)")+
+  coord_cartesian(xlim=c(2,11))+
+  theme_bw() #+ theme(legend.position="none")
+
+
+Fig1c <- 
+  ggplot(data=filter(di_long), aes(x=DPI,y=DI)) +
+  geom_smooth(aes(y=lmer.pred,color=Strain),method="lm", se= F) +
+  coord_cartesian(ylim=c(-0.5,4.5),xlim=c(2,11)) +
+  #theme(legend.position="none") +
+  labs(x = "Days post infection", y = "Disease Index", 
+       title="c) Estimated disease development")+ #Labels
+  theme_bw() 
+
+Fig1d <-  ggplot(data=filter(surv_DI_fit.df),aes(x=time, y=surv, color=Strain)) + 
+  geom_step(aes(linetype=Batch),alpha=1) + geom_line(data=sreg_curves,aes(y=lnorm.sreg ,color=Strain), size=1.1, alpha=0.6) +
+  labs(x="Days post infection", y="Estimated survival", title="d) Kaplan-Meier survival estimates and fits to lognormal distribution") +
+  coord_cartesian(xlim=c(2,11)) +
+  theme_bw()
+
+dev.off()
+pushViewport(viewport(layout= grid.layout(nrow=2, ncol=2)))
+print(Fig1a, vp = viewport(layout.pos.row = 1, layout.pos.col = 1))
+print(Fig1b, vp = viewport(layout.pos.row = 1, layout.pos.col = 2))
+print(Fig1c, vp = viewport(layout.pos.row = 2, layout.pos.col = 1))
+print(Fig1d, vp = viewport(layout.pos.row = 2, layout.pos.col = 2))
+
+
+###Figure 1 done####
+
+####clear device
+dev.off()
+
+#### Fig 2 #####
+##Figure on AUDPC
+###For the purpose of visualization calculate summaries across all replicates
+di_summary.nobatch <- di_long %>% group_by(Plant, Strain, DPI) %>% summarise(mean(DI),sd(DI),sd(DI)/sqrt(length(DI)))
+colnames(di_summary.nobatch) <- c("Plant", "Strain", "DPI", "mean", "sd", "se")
+####Fig2a: Plot the actual areas per strain
+Fig2a <- ggplot(di_summary.nobatch) +
+  aes(x=DPI,y=mean,color=Strain) +
+  geom_area(aes(fill=Strain), position="identity",alpha=0.15) +
+  geom_errorbar(aes(x=DPI, ymax=mean+se,ymin=mean-se))+
+  facet_wrap(~Strain) +
+  labs(x = "Days post infection", y = "Avg. Disease Index") +
+  theme(legend.position="none") +
+  ggtitle("a) Disease progression curves per strain")+
+  theme_bw()
+
+###Some extra scripting to make the mean and CI plot.
+auc_CI <- as.data.frame(tidy(confint(auc_lmer)))
+auc_CI <- auc_CI[3:9,] ##Drop sig01, sigma
+auc_CI$Strain <- levels(auc_df$Strain)
+###Mean relative to Strain1 (except strain1 that one is absolute)
+
+for (i in 1:nrow(auc_CI)){
+  if (i==1){
+    auc_CI$mean[i] <- mean(c(auc_CI$X2.5..[i],auc_CI$X97.5..[i]))
+    auc_CI$upr[i] <- auc_CI$X97.5..[i]
+    auc_CI$lwr[i] <- auc_CI$X2.5..[i]
+  } else {
+    auc_CI$mean[i] <- c(auc_CI$mean[1]+mean(c(auc_CI$X2.5..[i],auc_CI$X97.5..[i])))
+    auc_CI$upr[i] <- c(auc_CI$mean[1]+auc_CI$X97.5..[i])
+    auc_CI$lwr[i] <- c(auc_CI$mean[1]+auc_CI$X2.5..[i])
+  }
+}
+
+#####Fig2b meanCI the areas, and add each individual area as jitter; symbols in jitter by batch
+Fig2b <- ####Generate meanCI of AUDCP with significance letters
+  ggplot(aes(x=Strain, y=AUC, color=Strain),data=auc_df) + ###Plot the auc_df
+  geom_crossbar(data = auc_CI, aes(x = Strain, y = mean, ymin = lwr, ymax = upr,fill=Strain), alpha=0.3) +
+  geom_jitter(aes(shape=Batch)) + ###with jitter overplotted, symbol shape defined by batch
+  geom_text(aes(x=Strain, y=-3, label=Letter),color="black", data=auc_cld) + ###Get the letters from auc_cld 
+  #and write those to position y=-3
+  labs(y="AUDPC") + #Y-Axis label
+  ggtitle("b) AUDPC raw values and estimated means with 95% CI")+
+  theme_bw() #Title 
+
+###Arrage figures via Viewports
+pushViewport(viewport(layout= grid.layout(nrow=1, ncol=2)))
+print(Fig2a, vp = viewport(layout.pos.row = 1, layout.pos.col = 1))
+print(Fig2b, vp = viewport(layout.pos.row = 1, layout.pos.col = 2))
+
+###End of Fig2####
+####clear device
+dev.off()
+
+#### Fig 3 ####
+###Use only 6 Strains to make the facetting more usable, its kind of not nice when the number of plots is a prime..
+
+#Omit Strain4, it is not super interesting, its basically strain3 +1
+Fig3Strains <- c("Strain1","Strain2","Strain3","Strain5","Strain6","Strain7")
+
+#predict uncensored
+di_long <- add_predictions(di_long, lmer(DI ~ Strain + Strain:DPI + (1 | subject) + (1 | Batch), data = di_long), var="lmer.pred.no.cens")
+
+###3A: Linear fits
+F.3A <- ggplot(data=filter(di_long, Strain %in% Fig3Strains), aes(x=DPI,y=DI)) +
+  geom_jitter(aes(group=DPI),data=filter(di_long, Strain %in% Fig3Strains, Useful=="No", Strain %in% Fig3Strains),color="red",alpha=0.3) +
+  geom_jitter(aes(group=DPI),data=filter(di_long, Strain %in% Fig3Strains, Useful=="Yes", Strain %in% Fig3Strains),color="darkgrey",alpha=0.5)+
+  stat_summary(aes(y=lmer.pred),color="black", fun.y=mean , geom = "line" , alpha=0.6) +
+  stat_summary(aes(y=lmer.pred.no.cens), fun.y=mean,color="red" , geom = "line" , alpha=0.6) +
+  coord_cartesian(ylim=c(-0.5,4.5)) +
+  facet_wrap(~Strain)+
+  labs(x = "Days post infection", y = "Disease Index") + #Labels
+  ggtitle("b) Raw data and linear fit for individual strains averaged across batches")+
+  theme_bw()
+
+###3B
+
+F.3B <- ggplot(filter(di_summary, Strain %in% Fig3Strains), ###Use Only Batch A (too busy otherwise)
+  aes(x=DPI,y=mean,color=Strain)) + ###Color by Strain, specify x and y.
+  stat_summary(aes(fill=Strain), position="identity",alpha=0.15,fun.y=mean,geom="area") + ###Area plot, colored by Strain
+  ##geom_errorbar(aes(x=DPI, ymax=mean+se, ymin=mean-se), size=0.25)+ ###This line adds SE. 
+  ##geom_errorbar(aes(x=DPI, ymax=mean+sd, ymin=mean-sd), size=0.25)+ ###This line adds SD. 
+  stat_summary(aes(y=lmer.pred, x=DPI), color="black", filter(di_long, Strain %in% Fig3Strains), fun.y = mean, geom="line") +
+  stat_summary(aes(y=lmer.pred.no.cens, x=DPI), color="red", filter(di_long, Strain %in% Fig3Strains), fun.y = mean, geom="line") +
+  facet_wrap(~Strain) +###One plot per strain 
+  coord_cartesian(ylim=c(-0.5,4.5)) +
+  labs(x = "Days post infection", y = "Disease Index") + #Labels
+  ggtitle("a) Disease Areas and linear fits per strain averaged across batches")+ #Title+
+  theme_bw() +
+  theme(legend.position="none")
+
+
+pushViewport(viewport(layout= grid.layout(nrow=1, ncol=2)))
+print(F.3B, vp = viewport(layout.pos.row = 1, layout.pos.col = 1))
+print(F.3A, vp = viewport(layout.pos.row = 1, layout.pos.col = 2))
+
+###End of Fig3####
+####clear device
+dev.off()
+
+#### Fig 4 ####
+
+##Display MCP + CI from AUDPC and DISEASE_LMER
+##Calculations are done in the Rmd and available through the global environment
+
+gg_PWCI_AUDPC <- ggplot(pairwise_confint_AUDPC_lmer, aes(x = Comparison, y = Estimate, ymin = lwr, ymax = upr, color = abs(Estimate))) + ###Plot Comparison on x, estimate on y
+  scale_x_discrete(limits = rev(levels(as.factor(pairwise_confint_AUDPC_lmer$Comparison)))) + ###Rescale x, so the order is inverted 
+  geom_errorbar() + geom_point() + ###Draw data
+  coord_flip() +  xlab("") +###Invert X and Y, hide xlab
+  geom_hline(yintercept=0,linetype=2) + ###Horizontal because the plot is flipped...
+  ggtitle("a) Difference in estimated means of the AUDPC")+ ##Add a title+
+  theme_bw()+
+  theme(legend.position="none") #No legend.
+
+gg_icep_CI <- ggplot(confint_icep, aes(x = Strain, y = Estimate, ymin = lwr, ymax = upr, color = abs(Estimate))) + ###Plot Comparison on x, estimate on y
+  scale_x_discrete(limits = rev(levels(as.factor(confint_icep$Strain)))) + ###Rescale x, so the order is inverted 
+  geom_errorbar() + geom_point() + ###Draw data
+  coord_flip()  + xlab("") +###Invert X and Y, hide legend
+  ggtitle("b) Intercepts with 95%CI") + theme_bw()+
+  theme(legend.position="none") #No legend.
+
+gg_slopes_CI <- ggplot(confint_slopes, aes(x = Strain, y = Estimate, ymin = lwr, ymax = upr, color = abs(Estimate))) + ###Plot Comparison on x, estimate on y
+  scale_x_discrete(limits = rev(levels(as.factor(confint_slopes$Strain)))) + ###Rescale x, so the order is inverted 
+  geom_errorbar() + geom_point() + ###Draw data
+  coord_flip() +  theme(legend.position="none") + xlab("") +###Invert X and Y, hide legend
+  ggtitle("c) Slopes with 95%CI") + theme_bw()+
+  theme(legend.position="none") #No legend.
+
+pushViewport(viewport(layout= grid.layout(nrow=2, ncol=2)))
+print(gg_PWCI_AUDPC, vp = viewport(layout.pos.row = c(1,2), layout.pos.col = 1))
+print(gg_icep_CI, vp = viewport(layout.pos.row = 1, layout.pos.col = 2))
+print(gg_slopes_CI, vp = viewport(layout.pos.row = 2, layout.pos.col = 2))
+###End of Fig4####
+####clear device
+dev.off()
+
+
+###Fig 5 ####
+
+##Should display effects of bad cutoffing
+
+
+###Because i need to make multiple survfit dataframes, i have converted the script used in the other sections into a function, hopefully this makes it a little easier to follow. 
+###Working with multistrata survfits is a little annoying, and breaking the strata back into the predictors is not part of this fuction.
+###I would hope that at some point after this was written, a proper survfit tidier has been included into broom.
+survfit_to_df <- function(x) {
+  strata_dummy <-NULL
+  for(i in 1:length(x$strata)){
+    # add vector for one strata according to number of rows of strata
+    strata_dummy <- c(strata_dummy, rep(names(x$strata)[i], x$strata[i]))
+  }
+  #make x.df from x..
+  x.df <- data.frame( 
+    time = x$time, 
+    n.risk = x$n.risk, 
+    n.event = x$n.event, 
+    surv = x$surv, 
+    strata = strata_dummy, 
+    upper = x$upper, 
+    lower = x$lower 
+  ) 
+  zeros <- data.frame(time = 0, surv = 1, strata = names((x$strata)), 
+                      upper = 1, lower = 1)
+  
+  x.df <- plyr::rbind.fill(zeros, x.df) 
+  rm(strata_dummy)
+  rm(zeros)
+  return(x.df)
+}
+
+
+####Generate intermediate survival tables#####
+surv_table1 <- data.frame(Subject=disease_index$subject,
+                          Strain=disease_index$Strain,
+                          Plant=disease_index$Plant,
+                          Batch=disease_index$Batch)
+
+###Fill survival table based on the di_long table. This generates warnings. These can be ignored and come from the min()
+cutoff <- c(1)
+for (i in 1:max(di_long$subject)) { #Go by subject
+  dummy <- di_long[di_long$subject==i,] #generate dummy for the subject
+  if (is.infinite(min(dummy$DPI[which(dummy$DI >= cutoff)]))) { #If none of the DI is greater than the cutoff (this is where warnings are generated, min on an empty object returns infinite!)
+    surv_table1$End[i] <- max(dummy$DPI) #Generate a  observation, censoring at the maximum DPI recorded
+    surv_table1$Death[i] <- 0 #Still alive, because it did not pass the cutoff
+  } else { #If more than zero DI are greater than the cutoff
+    surv_table1$End[i] <- min(dummy$DPI[which(dummy$DI >= cutoff)]) #Use the lowest DPI where condition is met
+    surv_table1$Death[i] <- 1 #record as dead
+  }
+}
+
+surv_table2 <- data.frame(Subject=disease_index$subject,
+                         Strain=disease_index$Strain,
+                         Plant=disease_index$Plant,
+                         Batch=disease_index$Batch)
+###Fill survival table based on the di_long table. This generates warnings. These can be ignored and come from the min()
+cutoff <- c(2)
+for (i in 1:max(di_long$subject)) { #Go by subject
+  dummy <- di_long[di_long$subject==i,] #generate dummy for the subject
+  if (is.infinite(min(dummy$DPI[which(dummy$DI >= cutoff)]))) { #If none of the DI is greater than the cutoff (this is where warnings are generated, min on an empty object returns infinite!)
+    surv_table2$End[i] <- max(dummy$DPI) #Generate a  observation, censoring at the maximum DPI recorded
+    surv_table2$Death[i] <- 0 #Still alive, because it did not pass the cutoff
+  } else { #If more than zero DI are greater than the cutoff
+    surv_table2$End[i] <- min(dummy$DPI[which(dummy$DI >= cutoff)]) #Use the lowest DPI where condition is met
+    surv_table2$Death[i] <- 1 #record as dead
+  }
+}
+
+
+surv_table3 <- data.frame(Subject=disease_index$subject,
+                          Strain=disease_index$Strain,
+                          Plant=disease_index$Plant,
+                          Batch=disease_index$Batch)
+###Fill survival table based on the di_long table. This generates warnings. These can be ignored and come from the min()
+cutoff <- c(3)
+for (i in 1:max(di_long$subject)) { #Go by subject
+  dummy <- di_long[di_long$subject==i,] #generate dummy for the subject
+  if (is.infinite(min(dummy$DPI[which(dummy$DI >= cutoff)]))) { #If none of the DI is greater than the cutoff (this is where warnings are generated, min on an empty object returns infinite!)
+    surv_table3$End[i] <- max(dummy$DPI) #Generate a  observation, censoring at the maximum DPI recorded
+    surv_table3$Death[i] <- 0 #Still alive, because it did not pass the cutoff
+  } else { #If more than zero DI are greater than the cutoff
+    surv_table3$End[i] <- min(dummy$DPI[which(dummy$DI >= cutoff)]) #Use the lowest DPI where condition is met
+    surv_table3$Death[i] <- 1 #record as dead
+  }
+}
+
+
+
+surv_table4 <- data.frame(Subject=disease_index$subject,
+                          Strain=disease_index$Strain,
+                          Plant=disease_index$Plant,
+                          Batch=disease_index$Batch)
+###Fill survival table based on the di_long table. This generates warnings. These can be ignored and come from the min()
+cutoff <- c(4)
+for (i in 1:max(di_long$subject)) { #Go by subject
+  dummy <- di_long[di_long$subject==i,] #generate dummy for the subject
+  if (is.infinite(min(dummy$DPI[which(dummy$DI >= cutoff)]))) { #If none of the DI is greater than the cutoff (this is where warnings are generated, min on an empty object returns infinite!)
+    surv_table4$End[i] <- max(dummy$DPI) #Generate a  observation, censoring at the maximum DPI recorded
+    surv_table4$Death[i] <- 0 #Still alive, because it did not pass the cutoff
+  } else { #If more than zero DI are greater than the cutoff
+    surv_table4$End[i] <- min(dummy$DPI[which(dummy$DI >= cutoff)]) #Use the lowest DPI where condition is met
+    surv_table4$Death[i] <- 1 #record as dead
+  }
+}
+
+###Make survfits with the four survival tables..
+surv_DI_fit1 <- with(surv_table1, survfit(Surv(End, Death) ~Strain+Batch))
+surv_DI_fit2 <- with(surv_table2, survfit(Surv(End, Death) ~Strain+Batch))
+surv_DI_fit3 <- with(surv_table3, survfit(Surv(End, Death) ~Strain+Batch))
+surv_DI_fit4 <- with(surv_table4, survfit(Surv(End, Death) ~Strain+Batch))
+###Make survfits into surv_df
+surv_DI_fit1.df <- survfit_to_df(surv_DI_fit1)
+surv_DI_fit2.df <- survfit_to_df(surv_DI_fit2)
+surv_DI_fit3.df <- survfit_to_df(surv_DI_fit3)
+surv_DI_fit4.df <- survfit_to_df(surv_DI_fit4)
+
+###However the strata field still needs to be split manually....
+
+surv_DI_fit1.df$Batch <- as.factor( str_split_fixed(
+  matrix( nrow=length(surv_DI_fit1.df$strata),ncol=2, unlist(strsplit(as.character(surv_DI_fit1.df$strata),", ")), byrow=T )[,2],"=",2)[,2])
+surv_DI_fit1.df$Strain <- as.factor( str_split_fixed(
+  matrix( nrow=length(surv_DI_fit1.df$strata),ncol=2, unlist(strsplit(as.character(surv_DI_fit1.df$strata),", ")), byrow=T )[,1],"=",2)[,2])
+surv_DI_fit2.df$Batch <- as.factor( str_split_fixed(
+  matrix( nrow=length(surv_DI_fit2.df$strata),ncol=2, unlist(strsplit(as.character(surv_DI_fit2.df$strata),", ")), byrow=T )[,2],"=",2)[,2])
+surv_DI_fit2.df$Strain <- as.factor( str_split_fixed(
+  matrix( nrow=length(surv_DI_fit2.df$strata),ncol=2, unlist(strsplit(as.character(surv_DI_fit2.df$strata),", ")), byrow=T )[,1],"=",2)[,2])
+surv_DI_fit3.df$Batch <- as.factor( str_split_fixed(
+  matrix( nrow=length(surv_DI_fit3.df$strata),ncol=2, unlist(strsplit(as.character(surv_DI_fit3.df$strata),", ")), byrow=T )[,2],"=",2)[,2])
+surv_DI_fit3.df$Strain <- as.factor( str_split_fixed(
+  matrix( nrow=length(surv_DI_fit3.df$strata),ncol=2, unlist(strsplit(as.character(surv_DI_fit3.df$strata),", ")), byrow=T )[,1],"=",2)[,2])
+surv_DI_fit4.df$Batch <- as.factor( str_split_fixed(
+  matrix( nrow=length(surv_DI_fit4.df$strata),ncol=2, unlist(strsplit(as.character(surv_DI_fit4.df$strata),", ")), byrow=T )[,2],"=",2)[,2])
+surv_DI_fit4.df$Strain <- as.factor( str_split_fixed(
+  matrix( nrow=length(surv_DI_fit4.df$strata),ncol=2, unlist(strsplit(as.character(surv_DI_fit4.df$strata),", ")), byrow=T )[,1],"=",2)[,2])
+
+###End of intermediate table generation####
+
+####PlotZone####
+Fig5a <- ggplot(data=filter(surv_DI_fit1.df, Batch=="A   ", Strain %in% c("Strain1","Strain3", "Strain4") ), aes(time, surv, colour = Strain)) + 
+  geom_step(aes(y = surv*100),alpha=0.75) +
+  ggtitle("a) Event defined as DI >=1") +
+  theme_bw() +
+  labs(x = "Days post infection", y = "Percentage of plants alive") + 
+  theme(legend.position="none")
+
+Fig5b <- ggplot(data=filter(surv_DI_fit2.df, Batch=="A   ", Strain %in% c("Strain1","Strain3", "Strain4") ), aes(time, surv, colour = Strain)) + 
+  geom_step(aes(y = surv*100),alpha=0.75) +
+  ggtitle("b) Event defined as DI >= 2") +
+  theme_bw() +
+  labs(x = "Days post infection", y = "Percentage of plants alive") + 
+  theme(legend.position="none")
+
+Fig5c <- ggplot(data=filter(surv_DI_fit3.df, Batch=="A   ", Strain %in% c("Strain1","Strain3", "Strain4") ), aes(time, surv, colour = Strain)) + 
+  geom_step(aes(y = surv*100),alpha=0.75) +
+  ggtitle("c) Event defined as DI >= 3") +
+  theme_bw() +
+  labs(x = "Days post infection", y = "Percentage of plants alive") + 
+  theme(legend.position="none")
+
+Fig5d <- ggplot(data=filter(surv_DI_fit4.df, Batch=="A   ", Strain %in% c("Strain1","Strain3", "Strain4") ), aes(time, surv, colour = Strain)) + 
+  geom_step(aes(y = surv*100),alpha=0.75) +
+  ggtitle("d) Event defined as DI >= 4") +
+  theme_bw() +
+  labs(x = "Days post infection", y = "Percentage of plants alive") + 
+  theme(legend.position="none")
+
+pushViewport(viewport(layout= grid.layout(nrow=2, ncol=2)))
+print(Fig5a, vp = viewport(layout.pos.row = 1, layout.pos.col = 1))
+print(Fig5b, vp = viewport(layout.pos.row = 1, layout.pos.col = 2))
+print(Fig5c, vp = viewport(layout.pos.row = 2, layout.pos.col = 1))
+print(Fig5d, vp = viewport(layout.pos.row = 2, layout.pos.col = 2))
+
+dev.off()
+###End of Fig5####
+####clear device
+dev.off()
+
+
+
+###Fig 6 - Survival Regression####
+
+
+###Here come the Survregs
+###Dont plot "Strain7" for space reasons
+surv_strains <- c("Strain1","Strain2","Strain3","Strain5","Strain6","Strain4")
+
+kmdata <- filter(surv_DI_fit.df, Strain %in% surv_strains)
+curvdata <- filter(sreg_curves, Strain %in% surv_strains)
+#Labels
+
+ggwei <- ggplot(kmdata, aes(time, surv, colour = Strain)) +
+  geom_step(aes(linetype=Batch)) +
+  geom_line(data=curvdata,aes(y=wei.sreg),color="black") +
+  facet_wrap(~Strain) + theme(legend.position="none")+
+  ggtitle("c) Kaplan-Meier estimates and fit to Weibull distribution")+
+  theme_bw()+
+  labs(x = "Days post infection", y = "Fraction of plants alive") + 
+  theme(legend.position="none")
+###Plot of KM+Logistic
+gglogis <- ggplot(kmdata, aes(time, surv, colour = Strain)) +
+  geom_step(aes(linetype=Batch)) +
+  geom_line(data=curvdata,aes(y=logis.sreg),color="black") +
+  facet_wrap(~Strain) + theme(legend.position="none")+
+  ggtitle("d) Kaplan-Meier estimates and fit to Logistic distribution")+
+  theme_bw()+
+  labs(x = "Days post infection", y = "Fraction of plants alive") + 
+  theme(legend.position="none")
+###Plot of KM+Gaussian  
+gggaus <- ggplot(kmdata, aes(time, surv, colour = Strain)) +
+  geom_step(aes(linetype=Batch)) +
+  geom_line(data=curvdata,aes(y=gaus.sreg),color="black") +
+  facet_wrap(~Strain) + theme(legend.position="none")+
+  ggtitle("b) Kaplan-Meier estimates and fit to Gaussian distribution")+
+  theme_bw()+
+  labs(x = "Days post infection", y = "Fraction of plants alive") + 
+  theme(legend.position="none")
+###Plot of KM+Lognormal  
+gglnorm <- ggplot(kmdata, aes(time, surv, colour = Strain)) +
+  geom_step(aes(linetype=Batch)) +
+  geom_line(data=curvdata,aes(y=lnorm.sreg),color="black") +
+  facet_wrap(~Strain) + theme(legend.position="none")+
+  ggtitle("a) Kaplan-Meier estimates and fit to Lognormal distribution")+
+  theme_bw()+
+  labs(x = "Days post infection", y = "Fraction of plants alive") + 
+  theme(legend.position="none")
+
+pushViewport(viewport(layout= grid.layout(nrow=2, ncol=2)))
+print(gglnorm, vp = viewport(layout.pos.row = 1, layout.pos.col = 1))
+print(gggaus, vp = viewport(layout.pos.row = 1, layout.pos.col = 2))
+print(ggwei, vp = viewport(layout.pos.row = 2, layout.pos.col = 1))
+print(gglogis, vp = viewport(layout.pos.row = 2, layout.pos.col = 2))
+###End of Figure6###
+##Clear device.
+dev.off()
+
+####MOdified Figure 6
+lnorm.di <- cbind(as.character(sregparams$Strain[1:7]), 
+                  round(as.numeric(sregparams$scale.lnorm[1:7]), digits = 4), 
+                  round(as.numeric(sregparams$shape.lnorm[1:7]),  digits = 4),
+                  round( as.numeric(exp(sregparams$shape.lnorm[1:7])), digits = 4))
+colnames(lnorm.di) <- c("Strain","Scale","Shape","exp(Shape)")
+
+gglnorm <- ggplot(kmdata, aes(time, surv)) +
+  geom_step(aes(linetype=Batch)) +
+  geom_line(data=curvdata,aes(y=lnorm.sreg),color="black") +
+  facet_wrap(~Strain) + theme(legend.position="none")+
+  ggtitle("Kaplan-Meier estimates and fit to Lognormal distribution")+
+  theme_bw()+
+  labs(x = "Days post infection", y = "Fraction of plants alive") + 
+  theme(legend.position="none")
+
+library(gridExtra)
+
+# Set theme to allow for plotmath expressions
+tt <- ttheme_default(colhead=list(fg_params = list(parse=TRUE)))
+tbl <- tableGrob(lnorm.di, rows=NULL, theme=tt)
+# Plot chart and table into one object
+grid.arrange(tbl, gglnorm, 
+             ncol=2,
+             as.table=TRUE,
+             heights=c(3,1))
+
+````

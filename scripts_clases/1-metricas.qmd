@@ -11,11 +11,11 @@ knitr::opts_chunk$set(echo = TRUE,
 
 ```{r}
 # Setup
-# if(!require("pacman")) install.packages("pacman")
+if (!require("pacman")) install.packages("pacman")
 pacman::p_load(tidyverse, rio, epifitter)
 ```
 
-Calculo básico  de incidencia:
+Probamos una forma para calcular la proporción de árboles enfermos:
 
 ```{r}
 # status de enfermedad: 0=sano, 1=enfermo
@@ -59,7 +59,6 @@ Reproducción de: [APS-AUDPC](https://www.apsnet.org/edcenter/disimpactmngmnt/to
 epidemia <- tibble(
   time = c(0,2,5,6), 
   dis = c(1,2,7,7.5))
-epidemia
 ```
 
 ```{r}
@@ -70,17 +69,14 @@ epidemia %>%
   geom_line()
 ```
 
-Área bajo la curva del progreso de la enfermedad (ABC) - Absoluta
-
-Paquete "epifitter"
+Area bajo la curva del progreso de la enfermedad (ABC) - Absoluta
 
 ```{r}
-library(epifitter)
 abc_1  <- with(epidemia, 
-               AUDPC(time = time, 
-                     y = dis, 
-                     y_proportion = FALSE, 
-                     type = "absolute"))  
+                 AUDPC(time = time, 
+                  y = dis, 
+                  y_proportion = FALSE, 
+                  type = "absolute"))  
 abc_1
 ```
 ## Caso de estudio 
@@ -99,23 +95,23 @@ olivo %>% view()
 Re-estructuracion de los datos
 
 Pasamos de formato wide a long para hacer operaciones por grupos. 
-Ojo: No siempre debe hacerse este paso aunque nos habilita a group_by() + summarise()
+Ojo: No siempre debe hacerse este paso aunque nos habilita a group_by()+ summarise()
   # le pedimos que apile las columnas conteniendo a las plantas 1 a 30
   # el nombre de las columnas las apile en una columna llamada "tree"
   # la observaciones de severidad las apile en una columna llamada sev
   # el producto de este re-arreglo se llamará "oli_long"
   
 ```{r}
-olivo %>%    
+olivo %>%   
   pivot_longer(cols = `1`:`30`, 
-               names_to = "tree",
-               values_to = "sev") -> oli_long 
+         names_to = "tree",
+         values_to = "sev") -> oli_long 
 ```
 
 Chequeamos cuántos árboles fueron evaluados en cada año/región/lote:
 
 ```{r}
-oli_long %>% view
+oli_long
 ```
 
 Chequeamos cuantos arboles se evaluaron por campo
@@ -161,7 +157,7 @@ Graficamos oli_inc (una de las posibilidades)
 
 ```{r}
 oli_inc %>%  
-  ggplot() +
+  ggplot()+
   # aes(x=factor(year), y=inc) +
   aes(x=factor(year), y=inc, color=factor(farm)) +
   geom_point() +
@@ -224,11 +220,10 @@ oli_sev %>%
   geom_point(alpha=.3)+
   facet_wrap("year")+ 
   stat_summary(fun = mean, geom = "crossbar", col="blue")+
-  stat_summary(aes(label=..y.. %>% round(1)), 
+  stat_summary(aes(label=..y.. %>%  round(1)), 
                fun=mean, 
                geom="text", size=4, vjust = -0.5)  +
-  scale_x_discrete(guide = guide_axis(n.dodge = 2)) + 
-  labs(x="Localidad", y ="Severidad media (%)")
+  scale_x_discrete(guide = guide_axis(n.dodge = 2)) 
 ```
 
 ## DSI
@@ -249,7 +244,8 @@ Dataset de formato wide, que incluye 3 variables descriptivas y 4 variables resp
 poroto %>% 
   mutate(diseased = class_1 + class_2 + class_3 + class_4)  %>% 
   mutate(inc_p = diseased/n) %>% 
-  mutate(midpoint = (13*class_1 + 37.5*class_2 + 62.5*class_3 + 87.5*class_4)/n) %>%   
+  mutate(midpoint = (.13*class_1 +.375*class_2 + .625*class_3 + .875*class_4)/n*100) %>%   
+  mutate(midpoint_p = midpoint/100) %>% 
   mutate_at(vars(trt, rep), as.factor) -> poroto_dsi
 poroto_dsi
 ```

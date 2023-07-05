@@ -1,0 +1,333 @@
+---
+title: "GLM binomial"
+editor_options: 
+  chunk_output_type: console
+---
+
+# etup 
+
+Cargamos paquetes de utilidad para esta sesión y configuramos la estetica global de los graficos. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(rio, tidyverse,  # manipulacion general de datos
+               lme4,       # ajuste de modelos mixtos
+               DHARMa,     # diagnosticos de GLM
+               performance,# diagnosticos de LM 
+               sjPlot,     # visualizacion de outputs
+               emmeans,    # medias predichas por los modelos y comparaciones
+               ggeffects,  # predicciones
+               multcomp, multcompView)   # letras de test de comparaciones multiples
+
+theme_set(theme_bw())
+```
+
+# DBCA
+
+```{r}
+phom_raw <- import("https://raw.githubusercontent.com/juanchiem/glm_webinar/main/data/phomopsis.csv") %>% tibble
+# phom_raw <- rio::import("data/phomopsis.csv") %>% tibble 
+```
+
+**Efecto de tratamientos de fungicidas sobre tizon foliar por Phomopsis en frutilla (Nita, Madden & Ellis)**
+
+- Patógeno: *Phomopsis obscurans*
+
+- Diseño en bloques completos aleatorizados (RCBD)
+
+- Cuatro bloques (bk, j = 1, ..., 4) 
+
+- Ocho tratamientos: control no tratado + 7 fungicidas (trt, i = 1, ..., 8) aleatorizados dentro de cada bloque 
+- Variable respuesta (Y): Numero de foliolos enfermos 
+
+- n Tamaño de la muestra
+
+- Incidencia por parcela = y/n
+
+
+> Madden, L. V., W. W. Turechek, and M. Nita. "Evaluation of generalized linear mixed models for analyzing disease incidence data obtained in designed experiments." *Plant Disease* 86.3 (2002): 316-325.
+
+#· Acondicionamiento
+
+```{r}
+phom_raw  
+
+# Factorizamos nuestros variables independientes (predictoras) y calculamos la incidencia en proporcion 
+
+phom_dat <- phom_raw %>% 
+  mutate_at(vars(trt, bk), as.factor) %>% 
+  mutate(inc=y/n) %>% 
+  arrange(trt)
+phom_dat
+```
+
+#· Visualización
+
+```{r}
+phom_dat %>% 
+  ggplot() + 
+  aes(x=trt, y = inc) + 
+  geom_boxplot(alpha=.5, width = .2) + 
+  geom_point(alpha=.7) + 
+  labs(x="Tratamientos", y="Incidencia (proporción)")
+```
+
+#·· Modelos mixtos - LM
+
+Efecto fijo al tratamiento y aleatorio a los bloques
+
+
+```{r}
+# pacman::p_load(lmerTest)
+mod_phom_LM <- lmer(inc ~ trt + (1|bk), 
+                    data=phom_dat)
+check_homogeneity(mod_phom_LM)
+check_normality(mod_phom_LM)
+```
+
+```{r}
+car::Anova(mod_phom_LM, type="III")
+summary(mod_phom_LM)
+```
+
+Podriamos avanzar con el modelo, hacia la estimacion de medias predichas por el mismo 
+
+{emmeans, multcomp}
+
+```{r}
+em_phom_LM <- emmeans(mod_phom_LM, ~ trt, type="response")
+em_phom_LM
+# comparaciones multiples 
+res_phom_LM <- cld(em_phom_LM, Letters = letters, alpha = .05, type = "response")
+kable(res_phom_LM)
+plot_model(mod_phom_LM, type='pred', show.data=T)
+```
+
+
+#·· GLM
+
+Proporcion de exitos / total muestra (incidencia) 
+
+```{r}
+mod_phom_GLM2 <- glmer(inc ~ trt + (1|bk), 
+               family="binomial", 
+               weights = n, # pesos o tamaño de muestra
+               data=phom_dat)
+```
+
+#··· Diagnósticos
+
+https://stats.stackexchange.com/questions/185491/diagnostics-for-generalized-linear-mixed-models-specifically-residuals 
+
+{DHARMa}
+
+https://cran.r-project.org/web/packages/DHARMa/vignettes/DHARMa.html#goodness-of-fit-tests-on-the-scaled-residuals
+
+```{r}
+simulateResiduals(mod_phom_GLM2) %>% testResiduals()
+```
+
+```{r}
+summary(mod_phom_GLM2)
+```
+
+Medias predichas por el modelo ajustado y comparaciones multiples
+
+```{r}
+em_phom_GLM <- emmeans(mod_phom_GLM2, ~ trt, type="response")
+res_phom_GLM <- cld(em_phom_GLM, Letters = letters, alpha = .05, type = "response")
+knitr::kable(res_phom_GLM)
+```
+
+
+```{r}
+tab_model(mod_phom_GLM2)
+```
+
+> La chance de un foliolo de frutilla presentar sintoma de phomopsis disminuye un 50% cuando se aplica el tratamiento 2 respecto al control sin tratar
+
+```{r}
+knitr::kable(res_phom_LM)
+knitr::kable(res_phom_GLM)
+```
+
+• Los errores estándar estimados (SE) son todos incorrectos (por definición), deben ser funciones de la media para datos binomiales 
+
+
+• Los SE incorrectos darán pruebas incorrectas de significación para los efectos del tratamiento y conducirán a conclusiones incorrectas
+
+#3 ----------------------------
+
+# Reg. Logistica
+
+## Data maracuya
+
+dat 
+
+geno: genotipos de maracuyá (Passiflora edulis) (A y B)
+
+bk: bloque (area homogenea dentro del campo que incluye hileras de genotipo A y B) - Efecto aleatorio
+
+days: dias desde la inoculacion (DDI) con el virus CABMV (Cowpea aphid-borne mosaic virus) 
+
+n_plants: nro de plantas evaluadas dentro de cada parcela 
+
+dis_plants: plantas con sintomas del CABMV
+
+y = inc_prop (dis_plants/n_plants)
+
+plot: unidad experimental (parcelas=bloque:geno)
+
+
+```{r}
+raw <- rio::import("https://raw.githubusercontent.com/juanchiem/glm_webinar/main/data/maracuya.csv") %>% tibble
+# raw <- rio::import("data/maracuya.csv") %>% tibble
+
+dat <- raw %>%  
+  mutate_at(vars(geno, bk), as.factor) %>% 
+  mutate(inc_prop=dis_plants/n_plants, 
+         plot = interaction(bk,geno))  # %>% 
+
+dat %>%
+    ggplot() +
+    aes(x=days, y=inc_prop, col=geno, shape=bk)+
+    geom_point()+
+    geom_line(aes(group=interaction(bk,geno))) 
+```
+
+Filtramos el dataset completo para subsets menores
+
+```{r}
+# solo una evaluación a los 60 dias 
+dat60 <- dat %>% 
+  filter(days %in% c(60))
+
+# solo una evaluación a los 90 dias 
+dat90 <- dat %>% 
+  filter(days %in% c(90))
+
+# Dos evaluaciones: a los 60 y 90 dias 
+dat60_90 <- dat %>% 
+  filter(days %in% c(60, 90)) # %>% 
+  # mutate_at(vars(days), as.factor) 
+```
+
+
+# Single-point assessment 
+
+# · 60 d
+
+```{r}
+dat60
+dat60 %>% 
+  ggplot() + 
+  aes(x=geno, y=inc_prop) + 
+  geom_jitter(alpha=.5, width=.02)
+```
+
+
+```{r}
+# mod1 <- glmer(
+#   cbind(dis_plants, n_plants-dis_plants) ~ geno + (1|bk), 
+#   family="binomial", 
+#   data=dat60) 
+
+mod1 <- glmer(
+  inc_prop ~ geno + (1|bk), # bloque como efecto aleatorio
+  weights=n_plants,         
+  family="binomial", 
+  data=dat60) 
+
+car::Anova(mod1)
+summary(mod1)
+```
+
+
+```{r}
+tab_model(mod1)
+plot_model(mod1, type='pred', show.data=T,   bpe.color ="red")
+```
+
+Otro gran aliado es el paquete "emmeans" quien nos devuelve las estimaciones en proporcion ahorrandonos muchos calculos manuales 
+
+```{r}
+em1 <- emmeans(mod1, ~ geno, type="response")
+res1 <- cld(em1, Letters = letters, alpha = .05, type = "response")
+knitr::kable(res1)
+```
+
+Interpretacion de coef y medidas de efecto
+
+```{r}
+# lo que nos da el emmeans
+p_A = 0.1066667
+p_B =  0.0933333
+
+odds_A = p_A/(1-p_A)
+odds_B = p_B/(1-p_B)
+
+# lo que nos da el tab_model
+OR_B_A = odds_B/odds_A
+OR_B_A
+
+# lo que nos da el summary 
+log_OR_B_A = log(OR_B_A)
+log_OR_B_A  
+summary(mod1)
+```
+
+
+# · 90 d
+
+```{r}
+dat90
+
+dat90 %>% 
+  ggplot() + 
+  aes(x=geno, y=inc_prop) + 
+  geom_point()
+
+# mod1 <- glmer(
+#   cbind(dis_plants, n_plants-dis_plants) ~ geno + (1|bk), 
+#   family="binomial", 
+#   data=dat60)
+```
+
+
+```{r}
+mod2 <- glmer(
+  inc_prop ~ geno + (1|bk),
+  weights=n_plants,
+  family="binomial", 
+  data=dat90)
+
+# boundary (singular) fit: see help('isSingular') puede deberse al bajo numero de bk
+```
+
+
+```{r}
+car::Anova(mod2)
+summary(mod2)
+```
+
+Vemos que ahora si, el geno tiene efecto significativo sobre la incidencia de la enfermedad
+
+```{r}
+tab_model(mod2)
+```
+
+podemos decir que la chance de presentar la enfermedad del genotipo B es 71% (1 - 0.29 = 0.71 * 100) menor en relacion al geno A
+
+```{r}
+plot_model(mod2, type='pred', show.data=T)
+```
+
+
+```{r}
+em2 <- emmeans(mod2, ~ geno, type="response")
+res2 <- cld(em2, Letters = letters, alpha = .05, type = "response")
+knitr::kable(res2)
+```
+
+

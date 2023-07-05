@@ -1,4 +1,4 @@
-library(brms)
+# library(brms)
 library(nnet)
 library(emmeans)
 library(tidyverse)
@@ -28,4 +28,4 @@ test_nnet <- multinom(prog ~ ses,  data = dat)
 rg_nnet <- ref_grid(test_nnet)
 emm <- emmeans(rg_nnet, specs = ~prog|ses, mode = "prob")
 contrast(emm, "pairwise", adjust = "mvt")
-
+plot(emm)

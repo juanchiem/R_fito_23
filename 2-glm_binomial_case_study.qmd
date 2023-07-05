@@ -1,0 +1,166 @@
+---
+title: "GLM - Regresion logística - Virus en maracuyá"
+editor_options: 
+  chunk_output_type: console
+---
+
+## Data maracuya
+
+dat
+
+geno: genotipos de maracuyá (Passiflora edulis) (A y B)
+
+bk: bloque (area homogenea dentro del campo que incluye hileras de genotipo A y B) - Efecto aleatorio
+
+days: dias desde la inoculacion (DDI) con el virus CABMV (Cowpea aphid-borne mosaic virus)
+
+n_plants: nro de plantas evaluadas dentro de cada parcela
+
+dis_plants: plantas con sintomas del CABMV
+
+y = inc_prop (dis_plants/n_plants)
+
+plot: unidad experimental (parcelas=bloque:geno)
+
+```{r}
+raw <- rio::import("https://raw.githubusercontent.com/juanchiem/glm_webinar/main/data/maracuya.csv") %>% tibble
+# raw <- rio::import("data/maracuya.csv") %>% tibble
+
+dat <- raw %>%  
+  mutate_at(vars(geno, bk), as.factor) %>% 
+  mutate(inc_prop=dis_plants/n_plants, 
+         plot = interaction(bk,geno))  # %>% 
+
+dat %>%
+    ggplot() +
+    aes(x=days, y=inc_prop, col=geno, shape=bk)+
+    geom_point()+
+    geom_line(aes(group=interaction(bk,geno))) 
+```
+
+Filtramos el dataset completo para subsets menores
+
+```{r}
+# solo una evaluación a los 60 dias 
+dat60 <- dat %>% 
+  filter(days %in% c(60))
+
+# solo una evaluación a los 90 dias 
+dat90 <- dat %>% 
+  filter(days %in% c(90))
+
+# Dos evaluaciones: a los 60 y 90 dias 
+dat60_90 <- dat %>% 
+  filter(days %in% c(60, 90)) # %>% 
+  # mutate_at(vars(days), as.factor) 
+```
+
+# Single-point assessment
+
+# · 60 d
+
+```{r}
+dat60
+dat60 %>% 
+  ggplot() + 
+  aes(x=geno, y=inc_prop) + 
+  geom_jitter(alpha=.5, width=.02)
+```
+
+```{r}
+# mod1 <- glmer(
+#   cbind(dis_plants, n_plants-dis_plants) ~ geno + (1|bk), 
+#   family="binomial", 
+#   data=dat60) 
+
+mod1 <- glmer(
+  inc_prop ~ geno + (1|bk), # bloque como efecto aleatorio
+  weights=n_plants,         
+  family="binomial", 
+  data=dat60) 
+
+car::Anova(mod1)
+summary(mod1)
+```
+
+```{r}
+tab_model(mod1)
+plot_model(mod1, type='pred', show.data=T,   bpe.color ="red")
+```
+
+Otro gran aliado es el paquete "emmeans" quien nos devuelve las estimaciones en proporcion ahorrandonos muchos calculos manuales
+
+```{r}
+em1 <- emmeans(mod1, ~ geno, type="response")
+res1 <- cld(em1, Letters = letters, alpha = .05, type = "response")
+knitr::kable(res1)
+```
+
+Interpretacion de coef y medidas de efecto
+
+```{r}
+# lo que nos da el emmeans
+p_A = 0.1066667
+p_B =  0.0933333
+
+odds_A = p_A/(1-p_A)
+odds_B = p_B/(1-p_B)
+
+# lo que nos da el tab_model
+OR_B_A = odds_B/odds_A
+OR_B_A
+
+# lo que nos da el summary 
+log_OR_B_A = log(OR_B_A)
+log_OR_B_A  
+summary(mod1)
+```
+
+# · 90 d
+
+```{r}
+dat90
+
+dat90 %>% 
+  ggplot() + 
+  aes(x=geno, y=inc_prop) + 
+  geom_point()
+
+# mod1 <- glmer(
+#   cbind(dis_plants, n_plants-dis_plants) ~ geno + (1|bk), 
+#   family="binomial", 
+#   data=dat60)
+```
+
+```{r}
+mod2 <- glmer(
+  inc_prop ~ geno + (1|bk),
+  weights=n_plants,
+  family="binomial", 
+  data=dat90)
+
+# boundary (singular) fit: see help('isSingular') puede deberse al bajo numero de bk
+```
+
+```{r}
+car::Anova(mod2)
+summary(mod2)
+```
+
+Vemos que ahora si, el geno tiene efecto significativo sobre la incidencia de la enfermedad
+
+```{r}
+tab_model(mod2)
+```
+
+podemos decir que la chance de presentar la enfermedad del genotipo B es 71% (1 - 0.29 = 0.71 \* 100) menor en relacion al geno A
+
+```{r}
+plot_model(mod2, type='pred', show.data=T)
+```
+
+```{r}
+em2 <- emmeans(mod2, ~ geno, type="response")
+res2 <- cld(em2, Letters = letters, alpha = .05, type = "response")
+knitr::kable(res2)
+```
