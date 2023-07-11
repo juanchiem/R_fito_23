@@ -1,0 +1,71 @@
+---
+title: "Ejercicios 1"
+editor_options: 
+  chunk_output_type: console
+---
+
+Carga de paquetes iniciales
+
+```{r}
+pacman::p_load(
+  tidyverse,
+  rio,
+  MESS,
+  agridat
+)
+
+```
+
+
+## 1 - Mancha en red en cebada.
+
+3 variedades 10 hojas con sus valores de severidad
+
+-   Calcule la incidencia y severidad media de cada trt, realicen gráficos exploratorios
+
+```{r}
+
+cebada <- rio::import("data/ceb.csv")
+
+```
+
+## 2 - Canola Phoma
+
+Experimento de canola conducido en Balcarce, donde fueron testeados 10 fungicidas (mas un control sin protección con fungicida) con 3 bloques, donde que se registró el progreso de manchas foliares de Phoma lingam a través del tiempo (tiempo térmico desde 
+
+-   calcule el AUC de cada parcela y grafiquen
+
+```{r}
+canola <- readxl::read_excel("data/canola_maculas.xlsx")
+```
+
+respuesta del ejercicio! pueden intentar hacerlo antes, pueden calcular el AUC de otra manera si desean tabién. 
+```{r}
+canola %>%  
+  pivot_longer(inc_15:inc_248, 
+         names_to = "tt", 
+         values_to = "inc", 
+         names_prefix = "inc_")-> can_long
+
+can_long %>%
+  group_by(trt, bk) %>%
+  summarize(AUC = MESS::auc(inc, tt))
+```
+
+## 3 - Downy mildew on grapes.
+
+The experiment was conducted at Wooster, Ohio, on the experimental farm of the Ohio Agricultural Research and Development Center, Ohio State University.
+
+There were 3 blocks with 6 treatments. Treatment 1 is the unsprayed control. On 30 Sep 1990, disease incidence was measured. For each plot, 5 randomly chosen shoots on each of the 3 vines were observed. The canopy was closed and shoots could be intertwined. On each shoot, the total number of leaves and the number of infected leaves were recorded.
+
+Used with permission of Larry Madden.
+
+-   Compare los trt (desconsidere vine y shoot) mediante GLMM
+
+```{r}
+grapes <- agridat::hughes.grapes
+
+grapes <- grapes %>% 
+  select(-"shoot",-"vine")
+
+```

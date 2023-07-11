@@ -1,0 +1,167 @@
+---
+title: "Disease severity as proportions and AUDPC"
+format: html
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+knitr::opts_chunk$set(warning = FALSE, cache = TRUE)
+
+pacman::p_load(
+  tidyverse, rio, conflicted,         # general purposes
+  lme4, glmmTMB, performance, DHARMa, emmeans, car, multcomp # modeling
+)
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
+conflict_prefer("export", "rio")
+```
+
+## Data
+
+```{r}
+sheet %>% 
+  range_read(sheet="barley_foliar_diseases")%>% 
+  janitor::clean_names() %>% 
+  # Add net spot pressure at day of spraying fungicides
+  add_column(mr_sm_0=2,.before = "mr_sm_12") %>% 
+  # convert percentage to proportion
+  mutate(across(where(is.numeric), ~ ./ 100))-> barley
+```
+
+### Diseases pressure (Check treatment) at each assessment moments
+
+```{r}
+barley %>% 
+  filter(trt==1) %>% 
+  summarise_if(is.numeric, mean)
+```
+
+
+## Scald - single point 
+
+```{r fig.show='hide'}
+range(barley$esc_sm_12)
+hist(barley$esc_sm_12)
+```
+
+
+```{r fig.show='hide'}
+lm_esc <- lmer(esc_sm_12 ~ trt + (1|bk), data = barley)
+check_heteroscedasticity(lm_esc)
+check_normality(lm_esc)
+plot(lm_esc)
+
+lm_esc2 <- lmer(sqrt(esc_sm_12) ~ trt + (1|bk), data = barley)
+check_heteroscedasticity(lm_esc2)
+check_normality(lm_esc2)
+plot(lm_esc2)
+```
+
+```{r}
+car::Anova(lm_esc2)
+```
+
+```{r}
+pred_esc <- emmeans(lm_esc2, ~ trt, type = "response") |> 
+  cld(Letters = letters, alpha = .05, reversed = F) |> 
+  tibble()
+
+res_esc <- pred_esc |> 
+  mutate(
+    `control(%)`=abs((response/filter(pred_esc, trt=="1")$response -1)*100), 
+    `Tukey_5%`=str_squish(.group)) |> 
+  mutate_if(is.numeric, list(~round(., 3))) %>% 
+  unite("IC_95%", lower.CL, upper.CL, sep = ";") %>% 
+  select(-SE, -df, -.group) %>% 
+  rename(sev_media=response)
+res_esc
+```
+
+```{r}
+beta_esc <- glmmTMB(
+  esc_sm_12 ~ trt + (1|bk),
+  data = barley,
+  # zi=~1, 
+  family="beta_family",
+  control = glmmTMBControl(optCtrl = list(iter.max = 500))
+)
+
+simulateResiduals(beta_esc) %>% testResiduals()
+```
+
+```{r}
+pred_esc_beta <- emmeans(beta_esc, ~ trt, type = "response") |> 
+  cld(Letters = letters, alpha = .05, reversed = F) 
+
+res_esc_beta <- pred_esc_beta |> 
+  mutate(
+    `control(%)`=abs((response/filter(pred_esc_beta, trt=="1")$response -1)*100), 
+    `Tukey_5%`=str_squish(.group)) |> 
+  mutate_if(is.numeric, list(~round(., 3))) %>% 
+  unite("IC_95%", asymp.LCL, asymp.UCL, sep = ";") %>% 
+  select(-SE, -df, -.group) %>% 
+  rename(sev_media=response)
+res_esc_beta
+```
+
+## Net spot - AUC
+
+```{r}
+barley %>% 
+  select(trt, bk, starts_with("mr")) %>% 
+  pivot_longer(-c(trt, bk), 
+               names_to = "eval",
+               names_prefix = "mr_sm_",
+               values_to = "sev") %>%
+  mutate_at(vars(eval), as.numeric) %>% 
+  group_by(trt, bk) %>% 
+  summarise(auc= MESS::auc(eval, sev)) %>% 
+  mutate_at(vars(trt, bk), as.factor) %>% 
+  ungroup() -> barley_mr
+```
+
+```{r fig.show='hide'}
+range(barley_mr$auc)
+hist(barley_mr$auc)
+```
+
+```{r fig.show='hide'}
+lm_mr <- lmer(auc ~ trt + (1|bk), data = barley_mr)
+check_heteroscedasticity(lm_mr)
+check_normality(lm_mr)
+plot(lm_mr)
+
+MASS::boxcox(lm(auc ~ trt + bk, data = barley_mr))
+ 
+lm_mr2 <- lmer(sqrt(auc) ~ trt + (1|bk), data = barley_mr)
+check_heteroscedasticity(lm_mr2)
+check_normality(lm_mr2)
+plot(lm_esc2)
+```
+
+```{r}
+gamma_mr <- glmmTMB(
+  auc ~ trt + (1|bk),
+  data = barley_mr,
+  family=ziGamma(link="log"), ziformula = ~1,
+  control = glmmTMBControl(optCtrl = list(iter.max = 500))
+)
+
+simulateResiduals(gamma_mr) %>% testResiduals()
+```
+
+```{r}
+pred_mr <- emmeans(gamma_mr, ~ trt, type = "response") |> 
+  cld(Letters = letters, alpha = .05, reversed = F) 
+
+res_mr <- pred_mr |> 
+  mutate(
+    `control(%)`=abs((response/filter(pred_mr, trt=="1")$response -1)*100), 
+    `Tukey_5%`=str_squish(.group)) |> 
+  mutate_if(is.numeric, list(~round(., 3))) %>% 
+  unite("IC_95%", asymp.LCL, asymp.UCL, sep = ";") %>% 
+  select(-SE, -df, -.group) %>% 
+  rename(sev_media=response)
+res_mr
+```

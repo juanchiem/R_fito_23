@@ -1,0 +1,160 @@
+---
+title: "Ejercicios 1"
+editor_options: 
+  chunk_output_type: inline
+---
+
+Carga de paquetes iniciales
+
+```{r}
+pacman::p_load(
+  tidyverse,
+  rio,
+  MESS,
+  agridat
+)
+```
+
+
+## 1 - Mancha en red en cebada.
+
+3 variedades 10 hojas con sus valores de severidad
+
+-   Calcule la incidencia y severidad media de cada trt, realicen gráficos exploratorios
+
+```{r}
+cebada <- rio::import("data/ceb.csv")
+cebada
+```
+
+```{r}
+cebada %>% # names
+  pivot_longer(cols="sev_1":"sev_10", 
+               names_to = "hojas", 
+               values_to = "sev",
+               names_prefix = "sev_") %>% 
+  mutate_at(vars(hojas), as.numeric) -> cebada_long
+
+cebada_long %>% 
+  mutate(enfermos = sev>0) %>%
+  group_by(trt) %>% 
+  # count(enfermos)
+  summarise(inc = mean(enfermos),
+            sev_m = mean(sev))
+```
+
+```{r}
+cebada_long %>% # names
+  # filter(sev>6)
+  ggplot() + 
+  aes(x=factor(trt), y=sev) + 
+  geom_text(aes(label=hojas))
+  geom_jitter(width=.1) + 
+  stat_summary(fun = "mean", col="red")
+```
+
+```{r}
+cebada_long %>% # names
+  mutate(enfermos = if_else(sev>0,1,0)) %>%
+  ggplot() + 
+  aes(x=factor(trt), y=enfermos) + 
+  # geom_text(aes(label=hojas))
+  geom_jitter(width=.1, height = .1) + 
+  stat_summary(fun = "mean", col="red")
+```
+
+## 2 - Canola Phoma
+
+Experimento de canola conducido en Balcarce, donde fueron testeados 10 fungicidas (mas un control sin protección con fungicida) con 3 bloques, donde que se registró el progreso de manchas foliares de Phoma lingam a través del tiempo (tiempo térmico desde 
+
+-   calcule el AUC de cada parcela y grafiquen
+
+```{r}
+# canola <- rio::import("data/canola_maculas.xlsx")
+# canola %>% rio::export("data/canola_maculas.csv")
+canola <- rio::import("data/canola_maculas.csv")
+```
+
+respuesta del ejercicio! pueden intentar hacerlo antes, pueden calcular el AUC de otra manera si desean tabién. 
+```{r}
+canola %>%  
+  pivot_longer(inc_15:inc_248, 
+               names_to = "tt", 
+               values_to = "inc", 
+               names_prefix = "inc_") %>% 
+  mutate_if(is.character, as.numeric) %>% 
+  mutate(id_plot = interaction(bk, trt))-> can_long
+
+can_long
+```
+
+```{r}
+can_long %>% 
+  ggplot() + 
+  aes(x=tt, y=inc) + 
+  geom_point() + 
+  geom_line() + 
+  facet_wrap("id_plot")
+```
+
+
+```{r}
+can_long %>%
+  group_by(bk, trt) %>%
+  summarize(AUC = MESS::auc(tt, inc),  .groups="drop") %>% 
+  mutate_at(vars(bk, trt), as.factor)-> canola_dat
+canola_dat
+```
+
+```{r}
+mod_can <- lm(AUC ~ trt + bk, data=canola_dat)
+performance::check_heteroscedasticity(mod_can)
+performance::check_normality(mod_can)
+```
+
+## 3 - Downy mildew on grapes.
+
+The experiment was conducted at Wooster, Ohio, on the experimental farm of the Ohio Agricultural Research and Development Center, Ohio State University.
+
+There were 3 blocks with 6 treatments. Treatment 1 is the unsprayed control. On 30 Sep 1990, disease incidence was measured. For each plot, 5 randomly chosen shoots on each of the 3 vines were observed. The canopy was closed and shoots could be intertwined. On each shoot, the total number of leaves and the number of infected leaves were recorded.
+
+Used with permission of Larry Madden.
+
+-   Compare los trt (desconsidere vine y shoot) mediante GLMM
+
+```{r}
+grapes <- agridat::hughes.grapes
+
+  %>% mutate(inc=diseased/total) ->grapes_dat
+# grapes <- grapes %>% select(-"shoot",-"vine")
+```
+```{r}
+grapes %>% 
+  ggplot() + 
+  aes(x=trt, y=diseased/total) +
+  geom_point(aes(col=shoot)) + 
+  facet_grid(block ~ vine) + 
+  stat_summary(fun="mean", geom="crossbar")
+
+```
+```{r}
+library(lme4)
+library(emmeans)
+library(multcomp)
+library(sjPlot)
+grapes_dat %>% str
+mod_grape <- glmer(inc ~ trt + (1|block/vine/shoot), 
+                   weights = total, 
+                   family = binomial(link = "logit"), 
+                   data=grapes_dat)
+DHARMa::testOverdispersion(mod_grape)
+DHARMa::testOutliers(mod_grape)
+
+car::Anova(mod_grape)
+em_grape <- emmeans(mod_grape, ~trt, type="response")
+cld(em_grape, alpha=.05, Letters = letters)
+plot(em_grape)
+tab_model(mod_grape)
+plot_model(mod_grape)
+```
+

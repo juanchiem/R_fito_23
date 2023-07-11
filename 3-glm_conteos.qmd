@@ -1,0 +1,92 @@
+---
+title: "Disease severity as counts"
+---
+
+```{r}
+library(tidyverse)
+library(lme4)
+library(glmmTMB)
+library(DHARMa)
+library(emmeans)
+library(multcomp)
+theme_set(theme_bw(base_size=12))
+```
+
+```{r}
+link <- "https://docs.google.com/spreadsheets/d/17Ql6h4mlJEVbwtr-L6GCx8IjblTAGc9K8ETDQTfXXrk/edit?usp=drivesdk"
+googlesheets4::gs4_auth(email = "edwardsmolina@gmail.com")
+sheet <- gs4_get(link)
+
+# read data from online sheet
+sheet %>% 
+  range_read(sheet="spots_per_fruit")%>% 
+  janitor::clean_names() %>% 
+  filter(day==7) %>% 
+  filter(repetition==2) -> spots_per_fruit
+
+spots_per_fruit
+
+```
+
+```{r}
+spots_per_fruit %>% #names 
+  count(spots_per_fruit) %>% 
+  ggplot() + 
+  aes(x=spots_per_fruit, y=n) + 
+  geom_col()
+```
+```{r}
+spots_per_fruit %>% 
+  filter(day==7) %>% 
+  filter(repetition==2) %>% 
+  ggplot() + 
+  aes(x=fungicide, y=spots_per_fruit) + 
+  geom_jitter(width=.2, col=2, alpha=.5) + 
+  geom_boxplot(width=.5, alpha=.1) + 
+  labs(x="Fungicide timing (days after inoculation)", 
+       y="Severity (spots per fruit)") 
+```
+```{r}
+fit_poisson <- glmer(spots_per_fruit~fungicide +
+                       (1|replicate), 
+                     family = poisson(link = "log"), nAGQ = 15,
+                     data=spots_per_fruit)
+)
+```
+
+```{r}
+# https://glmmtmb.github.io/glmmTMB/articles/glmmTMB.pdf
+fit_zipoisson <- glmmTMB(spots_per_fruit~fungicide +
+                           (1|replicate),
+                         ziformula = ~1, family = poisson,
+                         data=spots_per_fruit)
+```
+
+```{r}
+fit_zinbinom <- update(fit_zipoisson_prev,family=nbinom2)
+fit_zinbinom1 <- update(fit_zipoisson_prev,family=nbinom1)
+AIC(fit_poisson, fit_zipoisson, fit_zinbinom, fit_zinbinom1)
+```
+```{r, eval=FALSE}
+simulateResiduals(fit_poisson) %>% testResiduals()
+simulateResiduals(fit_zinbinom) %>% testResiduals()
+DHARMa::testOverdispersion(fit_poisson)
+DHARMa::testSimulatedResiduals(fit_twediee_prev)
+# simulateResiduals(fit_twediee_prev) %>% testResiduals()
+```
+
+```{r}
+car::Anova(fit_zinbinom)
+```
+```{r}
+emm_spots <- emmeans(fit_zinbinom, ~ fungicide, type="response") 
+res_spots <- cld(emm_spots, alpha=0.05, Letters=letters,  type="response")
+res_spots %>% 
+    mutate(`%Control`=abs((response/filter(.,fungicide=="control")%>% pull(response)-1)*100)) 
+
+res_spots %>% 
+  ggplot()+
+  aes(x=fungicide, y =response)+
+  geom_pointrange(aes(ymin=asymp.LCL , ymax=asymp.UCL))+
+  geom_col(alpha=.2, width=.2)
+```
