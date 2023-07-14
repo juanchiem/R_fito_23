@@ -4,7 +4,8 @@ library(emmeans)
 library(tidyverse)
 
 # read in data
-raw <- foreign::read.dta("https://stats.idre.ucla.edu/stat/data/hsbdemo.dta")
+raw <- foreign::read.dta("https://stats.idre.ucla.edu/stat/data/hsbdemo.dta") %>% 
+  tibble()
 # The data set contains variables on 200 students. 
 # The outcome variable is prog, program type, a three-level 
 # categorical variable (general, academic, vocation). 
@@ -16,7 +17,7 @@ raw <- foreign::read.dta("https://stats.idre.ucla.edu/stat/data/hsbdemo.dta")
 dat <- raw %>% 
   # mutate_at(vars(prog), as.factor) %>% 
   mutate(prog = fct_relevel(factor(prog), "academic"))
-
+dat
 # str(dat$prog)
 
 # run test in nnet

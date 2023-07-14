@@ -1,32 +1,50 @@
 ---
 title: "Disease severity as counts"
+editor_options: 
+  chunk_output_type: console
 ---
 
 ```{r}
-library(tidyverse)
-library(lme4)
-library(glmmTMB)
-library(DHARMa)
-library(emmeans)
-library(multcomp)
-theme_set(theme_bw(base_size=12))
+pacman::p_load(
+  tidyverse, rio, conflicted, # general purposes
+  googlesheets4,              # google sheet import
+  glmmTMB, performance, DHARMa, emmeans, car, multcomp # modeling
+)
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
 ```
 
-```{r}
+```{r, eval=FALSE}
 link <- "https://docs.google.com/spreadsheets/d/17Ql6h4mlJEVbwtr-L6GCx8IjblTAGc9K8ETDQTfXXrk/edit?usp=drivesdk"
-googlesheets4::gs4_auth(email = "edwardsmolina@gmail.com")
+gs4_auth(email = "edwardsmolina@gmail.com")
 sheet <- gs4_get(link)
-
+sheet
 # read data from online sheet
+
 sheet %>% 
-  range_read(sheet="spots_per_fruit")%>% 
+  range_read(sheet="count_spots_per_fruit")%>% 
   janitor::clean_names() %>% 
   filter(day==7) %>% 
   filter(repetition==2) -> spots_per_fruit
-
-spots_per_fruit
-
+# spots_per_fruit %>% export("data/spots_per_fruit.csv")
 ```
+
+## Data
+
+```{r}
+spots_per_fruit <- import("data/spots_per_fruit.csv")
+spots_per_fruit
+```
+
+
+The disease is caused by **Stemphylium vesicarium** and its main symptoms are lesions in fruits and leaves. To assess counteracting measures against BSP, the effects of four fungicides were tested to evaluate preventive control of lesion development (counts) in pear fruit ‘D’Anjou’ var.
+
+```{r}
+# obtain from write_read_data.R
+ftable(xtabs(~ fungicide + day + repetition + replicate, data=spots_per_fruit))
+```
+
+# Data viz
 
 ```{r}
 spots_per_fruit %>% #names 
@@ -35,58 +53,81 @@ spots_per_fruit %>% #names
   aes(x=spots_per_fruit, y=n) + 
   geom_col()
 ```
+
 ```{r}
 spots_per_fruit %>% 
-  filter(day==7) %>% 
-  filter(repetition==2) %>% 
   ggplot() + 
-  aes(x=fungicide, y=spots_per_fruit) + 
+  aes(x=fungicide, y=spots_per_fruit) +
   geom_jitter(width=.2, col=2, alpha=.5) + 
   geom_boxplot(width=.5, alpha=.1) + 
-  labs(x="Fungicide timing (days after inoculation)", 
+  labs(x="Fungicide treatment", 
        y="Severity (spots per fruit)") 
 ```
-```{r}
-fit_poisson <- glmer(spots_per_fruit~fungicide +
-                       (1|replicate), 
-                     family = poisson(link = "log"), nAGQ = 15,
-                     data=spots_per_fruit)
-)
-```
+
+# Model fitting
 
 ```{r}
 # https://glmmtmb.github.io/glmmTMB/articles/glmmTMB.pdf
-fit_zipoisson <- glmmTMB(spots_per_fruit~fungicide +
-                           (1|replicate),
-                         ziformula = ~1, family = poisson,
+# https://cran.r-project.org/web/packages/DHARMa/vignettes/DHARMa.html
+```
+
+
+```{r}
+fit_poisson <- glmer(spots_per_fruit ~ fungicide + (1|replicate),
+                         family = poisson(link = "log"),
                          data=spots_per_fruit)
+plotQQunif(fit_poisson)
+testZeroInflation(fit_poisson)
 ```
 
 ```{r}
-fit_zinbinom <- update(fit_zipoisson_prev,family=nbinom2)
-fit_zinbinom1 <- update(fit_zipoisson_prev,family=nbinom1)
-AIC(fit_poisson, fit_zipoisson, fit_zinbinom, fit_zinbinom1)
+# ES EXACTAMENTE LO MISMO UN PAQUETE U OTRO: 
+
+fit_poisson_lme4 <- glmer(spots_per_fruit ~ fungicide + (1|replicate), 
+                     family = poisson(link = "log"), 
+                     data=spots_per_fruit)
+
+fit_poisson_glmmTMB <- glmmTMB(spots_per_fruit ~ fungicide + (1|replicate),
+                         family = poisson(link = "log"),
+                         data=spots_per_fruit)
+
+AIC(fit_poisson_lme4, fit_poisson_glmmTMB)
 ```
-```{r, eval=FALSE}
-simulateResiduals(fit_poisson) %>% testResiduals()
-simulateResiduals(fit_zinbinom) %>% testResiduals()
-DHARMa::testOverdispersion(fit_poisson)
-DHARMa::testSimulatedResiduals(fit_twediee_prev)
-# simulateResiduals(fit_twediee_prev) %>% testResiduals()
+
+
+```{r}
+fit_zipoisson <- glmmTMB(spots_per_fruit ~ fungicide + (1|replicate),
+                         family = poisson(link = "log"),
+                         data=spots_per_fruit, 
+                         ziformula = ~1)
+plotQQunif(fit_zipoisson)
+testZeroInflation(fit_zipoisson)
 ```
 
 ```{r}
-car::Anova(fit_zinbinom)
+fit_nbinom <- update(fit_zipoisson, family=nbinom1)
+
+plotQQunif(fit_nbinom)
+testZeroInflation(fit_nbinom)
+
+AIC(fit_poisson, fit_zipoisson, fit_nbinom)
 ```
+
 ```{r}
-emm_spots <- emmeans(fit_zinbinom, ~ fungicide, type="response") 
+car::Anova(fit_nbinom)
+```
+
+```{r}
+emm_spots <- emmeans(fit_nbinom, ~ fungicide, type="response") 
 res_spots <- cld(emm_spots, alpha=0.05, Letters=letters,  type="response")
+
 res_spots %>% 
     mutate(`%Control`=abs((response/filter(.,fungicide=="control")%>% pull(response)-1)*100)) 
 
 res_spots %>% 
+  mutate(fungicide = fct_relevel(fungicide, "control")) %>% 
   ggplot()+
-  aes(x=fungicide, y =response)+
-  geom_pointrange(aes(ymin=asymp.LCL , ymax=asymp.UCL))+
-  geom_col(alpha=.2, width=.2)
+  aes(x=response, y=fungicide)+
+  geom_pointrange(aes(xmin=asymp.LCL , xmax=asymp.UCL)) +
+  labs(x="Manchas por fruto")
 ```

@@ -10,24 +10,30 @@ knitr::opts_chunk$set(warning = FALSE, cache = TRUE)
 
 pacman::p_load(
   tidyverse, rio, conflicted,         # general purposes
-  lme4, glmmTMB, performance, DHARMa, emmeans, car, multcomp # modeling
+  lme4, glmmTMB,       # modeling
+  performance, DHARMa, # diagnostics 
+  emmeans, car, multcomp # post-hoc comparisons
 )
 conflict_prefer("select", "dplyr")
 conflict_prefer("filter", "dplyr")
 conflict_prefer("export", "rio")
 ```
-
 ## Data
 
 ```{r}
-sheet %>% 
-  range_read(sheet="barley_foliar_diseases")%>% 
-  janitor::clean_names() %>% 
-  # Add net spot pressure at day of spraying fungicides
-  add_column(mr_sm_0=2,.before = "mr_sm_12") %>% 
-  # convert percentage to proportion
-  mutate(across(where(is.numeric), ~ ./ 100))-> barley
+barley <- import("data/barley.csv") %>% 
+  mutate_at(vars(trt, bk), as.factor) 
+
+glimpse(barley)
 ```
+
+Ensayo de fungicidas foliares de cebada: 
+
+- 4 bloques
+- 15 tratamientos
+- severidad media (sm) evaluadas (10 hojas al azar de cada parcela)
+  - escaldadura (esc, **Rinchosporium secalis**) a los 12 días desde la aplicación de los tratamientos (single-point)
+  - mancha en red (mr, **Pyrenophora teres**) a los 12, 20 y 27 días desde la aplicación de los tratamientos (AUC)
 
 ### Diseases pressure (Check treatment) at each assessment moments
 
@@ -37,7 +43,6 @@ barley %>%
   summarise_if(is.numeric, mean)
 ```
 
-
 ## Scald - single point 
 
 ```{r fig.show='hide'}
@@ -45,44 +50,67 @@ range(barley$esc_sm_12)
 hist(barley$esc_sm_12)
 ```
 
+```{r}
+barley %>% 
+  ggplot() + 
+  aes(x=trt, y=esc_sm_12) + 
+  geom_boxplot(width=.1, col=2) + 
+  geom_jitter(width=.01)  
+```
+
+## LM
 
 ```{r fig.show='hide'}
 lm_esc <- lmer(esc_sm_12 ~ trt + (1|bk), data = barley)
-check_heteroscedasticity(lm_esc)
+check_homogeneity(lm_esc)
 check_normality(lm_esc)
 plot(lm_esc)
-
-lm_esc2 <- lmer(sqrt(esc_sm_12) ~ trt + (1|bk), data = barley)
-check_heteroscedasticity(lm_esc2)
-check_normality(lm_esc2)
-plot(lm_esc2)
 ```
 
 ```{r}
-car::Anova(lm_esc2)
+car::Anova(lm_esc)
+```
+### Contrasts
+
+```{r}
+em_esc_lm <- emmeans(lm_esc, ~ trt, type = "response")
 ```
 
 ```{r}
-pred_esc <- emmeans(lm_esc2, ~ trt, type = "response") |> 
+contrast(em_esc_lm, method = "trt.vs.ctrl", ref = 1) |> 
+  as_tibble() |> 
+  arrange(p.value)
+
+contrast(em_esc_lm, method = "trt.vs.ctrl", ref = 15) |> 
+  as_tibble() |> 
+  arrange(p.value)
+```
+
+```{r}
+pred_esc_LM <- emmeans(lm_esc, ~ trt, type = "response") |> 
   cld(Letters = letters, alpha = .05, reversed = F) |> 
   tibble()
+```
 
-res_esc <- pred_esc |> 
+
+```{r}
+pred_esc_LM
+res_esc_LM <- pred_esc_LM |> 
   mutate(
-    `control(%)`=abs((response/filter(pred_esc, trt=="1")$response -1)*100), 
+    `control(%)`=abs((emmean/filter(pred_esc_LM, trt=="1")$emmean -1)*100), 
     `Tukey_5%`=str_squish(.group)) |> 
   mutate_if(is.numeric, list(~round(., 3))) %>% 
   unite("IC_95%", lower.CL, upper.CL, sep = ";") %>% 
   select(-SE, -df, -.group) %>% 
-  rename(sev_media=response)
-res_esc
+  rename(sev_media=emmean)
+res_esc_LM
 ```
 
 ```{r}
 beta_esc <- glmmTMB(
   esc_sm_12 ~ trt + (1|bk),
   data = barley,
-  # zi=~1, 
+  # zi=~trt, 
   family="beta_family",
   control = glmmTMBControl(optCtrl = list(iter.max = 500))
 )
@@ -91,10 +119,26 @@ simulateResiduals(beta_esc) %>% testResiduals()
 ```
 
 ```{r}
-pred_esc_beta <- emmeans(beta_esc, ~ trt, type = "response") |> 
-  cld(Letters = letters, alpha = .05, reversed = F) 
+em_esc_beta <- emmeans(beta_esc, ~ trt, type = "response")
+```
 
-res_esc_beta <- pred_esc_beta |> 
+
+```{r}
+contrast(em_esc_beta, method = "trt.vs.ctrl", ref = 1) %>%  
+  as_tibble() |> 
+  arrange(p.value)
+
+contrast(em_esc_beta, method = "trt.vs.ctrl", ref = 15) |> 
+  as_tibble() |> 
+  arrange(p.value)
+```
+
+
+```{r}
+pred_esc_beta <- em_esc_beta |>
+  cld(Letters = letters, alpha = .05, reversed = F)  
+
+res_esc_beta <- pred_esc_beta |>
   mutate(
     `control(%)`=abs((response/filter(pred_esc_beta, trt=="1")$response -1)*100), 
     `Tukey_5%`=str_squish(.group)) |> 
@@ -105,20 +149,48 @@ res_esc_beta <- pred_esc_beta |>
 res_esc_beta
 ```
 
+# LM vs GLM
+
+```{r}
+p_m1 <- data.frame(pred_esc_LM) |> 
+  ggplot(aes(trt, emmean))+
+  geom_point()+
+  geom_text(aes(trt, emmean, label = round(emmean, 3)), size=2, nudge_x = 0.3)+
+  geom_errorbar(aes(min = lower.CL, max = upper.CL), width = 0)+
+  labs(title = "LM") +
+  lims(y=c(-0.01, 0.05))
+p_m1
+
+p_m2 <- data.frame(pred_esc_beta) |> 
+  ggplot(aes(trt, response))+
+  geom_point()+
+  geom_text(aes(trt, response, label = round(response, 3)), size=2, nudge_x = 0.3)+
+  geom_errorbar(aes(min = asymp.LCL, max = asymp.UCL), width = 0)+
+  labs(title = "GLM") +
+  lims(y=c(-0.01, 0.05))
+p_m2
+
+library(patchwork)
+p_m1 | p_m2
+
+res_esc_LM; res_esc_beta
+```
+
 ## Net spot - AUC
 
 ```{r}
 barley %>% 
   select(trt, bk, starts_with("mr")) %>% 
-  pivot_longer(-c(trt, bk), 
-               names_to = "eval",
-               names_prefix = "mr_sm_",
-               values_to = "sev") %>%
+  pivot_longer(
+    cols = starts_with("mr"), 
+    names_to = "eval",
+    names_prefix = "mr_sm_",
+    values_to = "sev") %>%
   mutate_at(vars(eval), as.numeric) %>% 
   group_by(trt, bk) %>% 
-  summarise(auc= MESS::auc(eval, sev)) %>% 
-  mutate_at(vars(trt, bk), as.factor) %>% 
+  summarise(auc = MESS::auc(eval, sev)) %>% 
   ungroup() -> barley_mr
+barley_mr
 ```
 
 ```{r fig.show='hide'}
@@ -126,33 +198,60 @@ range(barley_mr$auc)
 hist(barley_mr$auc)
 ```
 
+```{r}
+barley_mr %>% 
+  ggplot() + 
+  aes(x=trt, y=auc) + 
+  geom_boxplot(width=.1, col=2) + 
+  geom_jitter(width=.01)  
+```
+
 ```{r fig.show='hide'}
 lm_mr <- lmer(auc ~ trt + (1|bk), data = barley_mr)
-check_heteroscedasticity(lm_mr)
+check_homogeneity(lm_mr)
 check_normality(lm_mr)
 plot(lm_mr)
 
 MASS::boxcox(lm(auc ~ trt + bk, data = barley_mr))
- 
-lm_mr2 <- lmer(sqrt(auc) ~ trt + (1|bk), data = barley_mr)
-check_heteroscedasticity(lm_mr2)
+locator()
+
+lm_mr2 <- lmer(auc^(-1.17) ~ trt + (1|bk), data = barley_mr)
+check_homogeneity(lm_mr2)
 check_normality(lm_mr2)
-plot(lm_esc2)
+plot(lm_mr2)
 ```
 
 ```{r}
 gamma_mr <- glmmTMB(
   auc ~ trt + (1|bk),
   data = barley_mr,
-  family=ziGamma(link="log"), ziformula = ~1,
+  family = Gamma(link="log"), 
   control = glmmTMBControl(optCtrl = list(iter.max = 500))
 )
-
 simulateResiduals(gamma_mr) %>% testResiduals()
 ```
 
 ```{r}
-pred_mr <- emmeans(gamma_mr, ~ trt, type = "response") |> 
+em_mr_gamma <- emmeans(gamma_mr, ~ trt, type = "response")
+em_mr_gamma
+```
+
+### Contrasts
+
+```{r}
+contrast(em_mr_gamma, method = "trt.vs.ctrl", ref = 1) |> 
+  as_tibble() |> 
+  arrange(p.value)
+
+contrast(em_mr_gamma, method = "trt.vs.ctrl", ref = 15) |> 
+  as_tibble() |> 
+  arrange(p.value)
+```
+
+### multiple comparisons 
+
+```{r}
+pred_mr <- emmeans(em_mr_gamma, ~ trt, type = "response") |> 
   cld(Letters = letters, alpha = .05, reversed = F) 
 
 res_mr <- pred_mr |> 
@@ -165,3 +264,15 @@ res_mr <- pred_mr |>
   rename(sev_media=response)
 res_mr
 ```
+
+```{r}
+p_mr <- data.frame(pred_mr) |> 
+  ggplot(aes(trt, response))+
+  geom_point()+
+  geom_text(aes(trt, response, label = round(response, 3)), size=2, nudge_x = 0.3)+
+  geom_errorbar(aes(min = asymp.LCL, max = asymp.UCL), width = 0)+
+  labs(title = "GLM") 
+  # lims(y=c(-0.01, 0.05))
+p_mr
+```
+
