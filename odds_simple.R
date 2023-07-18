@@ -19,10 +19,9 @@ dm
 
 # install.packages('epitools')
 library(epitools)
-
 # calculate odds ratio
-res <- oddsratio(dm)
-res
+oddsratio(dm, rev="c")
+# res
 
 # install.packages('epiDisplay')
 library(epiDisplay)
